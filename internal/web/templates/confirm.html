@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>退订确认</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; margin: 0; }
+  .card { max-width: 420px; margin: 12vh auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size: 18px; margin: 0 0 12px; color: #1a1a1a; }
+  p { color: #444; font-size: 14px; line-height: 1.7; margin: 8px 0; }
+  .email { color: #111; font-weight: 600; word-break: break-all; }
+  button { margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: #c0392b; color: #fff; font-size: 15px; cursor: pointer; }
+  button:hover { background: #a93226; }
+  .sub { color: #888; font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>确认退订</h1>
+  <p>不再接收来自「{{.AppName}}」发送给 <span class="email">{{.Email}}</span> 的邮件？</p>
+  <form method="post" action="/u/{{.Token}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">确认退订</button>
+  </form>
+  <p class="sub">确认后立即生效，该程序将不再向此邮箱发送邮件。</p>
+</div>
+</body>
+</html>
