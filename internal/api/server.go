@@ -77,12 +77,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/apps/{name}", s.requireRole(store.RoleOperator, s.handlePatchApp))
 	mux.HandleFunc("POST /api/apps/{name}/rotate", s.requireRole(store.RoleOperator, s.handleRotateApp))
 	mux.HandleFunc("DELETE /api/apps/{name}", s.requireRole(store.RoleOperator, s.handleDeleteApp))
+	mux.HandleFunc("GET /api/unsubscribes", s.requireRole(store.RoleViewer, s.handleListUnsubscribes))
+	mux.HandleFunc("POST /api/unsubscribes", s.requireRole(store.RoleOperator, s.handleCreateUnsubscribe))
+	mux.HandleFunc("DELETE /api/unsubscribes/{id}", s.requireRole(store.RoleOperator, s.handleDeleteUnsubscribe))
 	mux.HandleFunc("GET /api/tokens", s.requireRole(store.RoleAdmin, s.handleListTokens))
 	mux.HandleFunc("POST /api/tokens", s.requireRole(store.RoleAdmin, s.handleCreateToken))
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.requireRole(store.RoleAdmin, s.handleRevokeToken))
 	mux.HandleFunc("GET /api/audit", s.requireRole(store.RoleAdmin, s.handleAudit))
 
 	return securityHeaders(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes)))
+}
+
+// HealthzHandler returns the standalone /healthz handler so the public
+// listener can serve the identical health endpoint without exposing any
+// management route.
+func (s *Server) HealthzHandler() http.HandlerFunc {
+	return s.handleHealthz
 }
 
 // securityHeaders applies the response headers mandated by the plan to every

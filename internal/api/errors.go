@@ -21,6 +21,7 @@ const (
 	codeAppNotFound    = "app_not_found"
 	codeAppExists      = "app_exists"
 	codeTokenNotFound  = "token_not_found"
+	codeUnsubNotFound  = "unsubscribe_not_found"
 	codeInvalidRequest = "invalid_request"
 	codeInternal       = "internal_error"
 )
