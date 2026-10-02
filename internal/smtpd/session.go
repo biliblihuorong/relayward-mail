@@ -223,11 +223,21 @@ func (s *session) relayAsIs(data []byte, meta messageMeta, size int64, start tim
 // relaySplit forwards one copy per recipient: recipients with an unsubscribe
 // record are suppressed (logged as such, still a 250 to the client so it does
 // not retry), the others each receive their own copy with their own
-// unsubscribe link. Any upstream failure maps like the single-copy path so
-// the client retries; already delivered copies may then arrive twice, which
-// the first version accepts (see DECISIONS.md).
+// unsubscribe link and — unless the app or a DKIM signature opts out — the
+// unsubscribe footer in the text parts. Any upstream failure maps like the
+// single-copy path so the client retries; already delivered copies may then
+// arrive twice, which the first version accepts (see DECISIONS.md).
 func (s *session) relaySplit(data []byte, meta messageMeta, size int64, start time.Time) error {
 	stripped := unsub.RemoveBcc(data)
+
+	injectBody := s.app.BodyInjection
+	if injectBody && unsub.HasDKIMSignature(stripped) {
+		// A client-side DKIM signature breaks when the body changes; the
+		// plan says to skip the footer and keep the headers.
+		injectBody = false
+		s.backend.logger.Warn("dkim signature detected, skipping body injection",
+			slog.String("app", s.app.Name), slog.String("msg_id", meta.MessageID))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
@@ -255,7 +265,23 @@ func (s *session) relaySplit(data []byte, meta messageMeta, size int64, start ti
 				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
 			return errTempRelay
 		}
-		msgData, err := unsub.AddUnsubscribeHeaders(stripped, s.backend.baseURL+"/u/"+token)
+		link := s.backend.baseURL + "/u/" + token
+
+		// Body injection must never block delivery: on failure the copy goes
+		// out with headers only (the plan's "parse failure forwards as-is").
+		msgData := stripped
+		if injectBody {
+			footer := strings.ReplaceAll(s.backend.footerText, "{app}", appDisplayName(s.app))
+			injected, _, err := unsub.InjectFooter(stripped, link, footer)
+			if err != nil {
+				s.backend.logger.Warn("body injection failed, forwarding without footer",
+					slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
+			} else {
+				msgData = injected
+			}
+		}
+
+		msgData, err = unsub.AddUnsubscribeHeaders(msgData, link)
 		if err != nil {
 			s.backend.logger.Error("inject unsubscribe headers",
 				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
@@ -325,6 +351,15 @@ func (s *session) logOne(status, resp string, meta messageMeta, size int64, rcpt
 		logger.Error("store message log", slog.String("err", err.Error()))
 	}
 	logger.Info("message processed")
+}
+
+// appDisplayName returns the name shown to recipients: display_name when
+// set, otherwise the SMTP username.
+func appDisplayName(a *store.App) string {
+	if a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return a.Name
 }
 
 // Reset implements smtp.Session: discard the current transaction but keep

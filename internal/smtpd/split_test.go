@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"mime/quotedprintable"
+
 	"github.com/emersion/go-sasl"
 	smtp "github.com/emersion/go-smtp"
 
@@ -21,12 +23,13 @@ func seedSplitApp(t *testing.T, st *store.Store, name string) *store.App {
 		t.Fatal(err)
 	}
 	app := &store.App{
-		Name:         name,
-		PasswordHash: hash,
-		Enabled:      true,
-		Unsubscribe:  true,
-		AllowedFrom:  []string{"NoReply@example.com"},
-		RatePerHour:  500,
+		Name:          name,
+		PasswordHash:  hash,
+		Enabled:       true,
+		Unsubscribe:   true,
+		BodyInjection: true,
+		AllowedFrom:   []string{"NoReply@example.com"},
+		RatePerHour:   500,
 	}
 	if err := st.CreateApp(t.Context(), app, nil); err != nil {
 		t.Fatalf("seed app %s: %v", name, err)
@@ -45,13 +48,16 @@ func testManager(t *testing.T) *unsub.Manager {
 
 const splitBaseURL = "https://mail.example.com"
 
+// splitFooter exercises the {app} placeholder replacement.
+const splitFooter = "不想再收到来自 {app} 的邮件？退订"
+
 // newSplitGateway wires a gateway whose backend carries a real unsubscribe
-// manager, relaying into a recording fake upstream.
+// manager and footer, relaying into a recording fake upstream.
 func newSplitGateway(t *testing.T) (*store.Store, *fakeUpstream, string) {
 	t.Helper()
 	st := openStore(t)
 	up := &fakeUpstream{}
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, testManager(t), splitBaseURL)
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, testManager(t), splitBaseURL, splitFooter)
 	return st, up, startSMTP(t, be)
 }
 
@@ -283,7 +289,7 @@ func (s *rcptFilteringSession) Data(r io.Reader) error {
 func TestSplitPartialFailureReturnsTempError(t *testing.T) {
 	st := openStore(t)
 	up := &rcptFilteringUpstream{marker: "bad@"}
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, testManager(t), splitBaseURL)
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, testManager(t), splitBaseURL, splitFooter)
 	addr := startSMTP(t, be)
 	seedSplitApp(t, st, "gitea")
 
@@ -307,7 +313,7 @@ func TestSplitPartialFailureReturnsTempError(t *testing.T) {
 func TestSplitMissingManagerTempFails(t *testing.T) {
 	st := openStore(t)
 	up := &fakeUpstream{}
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, nil, "")
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, up)), nil, nil, nil, nil, "", "")
 	addr := startSMTP(t, be)
 	seedSplitApp(t, st, "gitea")
 
@@ -321,5 +327,143 @@ func TestSplitMissingManagerTempFails(t *testing.T) {
 	defer up.mu.Unlock()
 	if len(up.messages) != 0 {
 		t.Fatalf("nothing may be forwarded without the token manager, got %+v", up.messages)
+	}
+}
+
+func TestSplitInjectsBodyFooter(t *testing.T) {
+	st, up, addr := newSplitGateway(t)
+	seedSplitApp(t, st, "gitea") // no display name: {app} falls back to the name
+
+	cl := dialSMTP(t, addr)
+
+	// HTML part: the fine print carries the {app} wording and the link.
+	html := "From: NoReply@example.com\r\nSubject: html\r\nMessage-Id: <b1@g>\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n\r\n" +
+		"<p>Hello html world.</p>\r\n</body>\r\n"
+	if err := sendToMany(t, cl, "gitea", "pw-gitea", "NoReply@example.com", []string{"a@example.com"}, html); err != nil {
+		t.Fatalf("html send: %v", err)
+	}
+
+	// Plain part: a blank line, the signature delimiter and the link line.
+	plain := "From: NoReply@example.com\r\nSubject: plain\r\nMessage-Id: <b2@g>\r\n\r\nHello plain world.\r\n"
+	cl2 := dialSMTP(t, addr)
+	if err := sendToMany(t, cl2, "gitea", "pw-gitea", "NoReply@example.com", []string{"a@example.com"}, plain); err != nil {
+		t.Fatalf("plain send: %v", err)
+	}
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.messages) != 2 {
+		t.Fatalf("upstream got %d messages, want 2", len(up.messages))
+	}
+
+	htmlData := string(decodeQP(bodyAfterHeaders(t, up.messages[0].Data)))
+	if !strings.Contains(htmlData, "不想再收到来自 gitea 的邮件？") {
+		t.Errorf("{app} placeholder not replaced with the app name:\n%s", htmlData)
+	}
+	linkPrefix := `<a href="` + splitBaseURL + `/u/`
+	if i, j := strings.Index(htmlData, linkPrefix), strings.Index(htmlData, "</body>"); i < 0 || j < 0 || i > j {
+		t.Errorf("html fragment missing or not before </body>:\n%s", htmlData)
+	}
+
+	plainData := string(decodeQP(bodyAfterHeaders(t, up.messages[1].Data)))
+	if !strings.Contains(plainData, "Hello plain world.\r\n\r\n-- \r\n退订："+splitBaseURL+"/u/") {
+		t.Errorf("plain footer missing or wrong link:\n%s", plainData)
+	}
+}
+
+// bodyAfterHeaders splits a relayed message into its raw body.
+func bodyAfterHeaders(t *testing.T, data []byte) []byte {
+	t.Helper()
+	sep := bytes.Index(data, []byte("\r\n\r\n"))
+	if sep < 0 {
+		t.Fatalf("malformed relayed message: %q", data)
+	}
+	return data[sep+4:]
+}
+
+// decodeQP decodes a quoted-printable body.
+func decodeQP(data []byte) []byte {
+	r := quotedprintable.NewReader(bytes.NewReader(data))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func TestSplitSkipsBodyInjectionForDKIM(t *testing.T) {
+	st, up, addr := newSplitGateway(t)
+	seedSplitApp(t, st, "gitea")
+
+	cl := dialSMTP(t, addr)
+	body := "From: NoReply@example.com\r\nDKIM-Signature: v=1; a=rsa-sha256; d=example.com\r\nSubject: signed\r\n\r\nSigned body stays intact.\r\n"
+	if err := sendToMany(t, cl, "gitea", "pw-gitea", "NoReply@example.com", []string{"a@example.com"}, body); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.messages) != 1 {
+		t.Fatalf("upstream got %d messages, want 1", len(up.messages))
+	}
+	data := string(up.messages[0].Data)
+	if strings.Contains(data, "退订") || strings.Contains(data, "quoted-printable") {
+		t.Errorf("body must stay untouched for DKIM-signed mail:\n%s", data)
+	}
+	if !strings.Contains(data, "List-Unsubscribe:") {
+		t.Errorf("unsubscribe headers must still be injected:\n%s", data)
+	}
+}
+
+func TestSplitRespectsBodyInjectionOff(t *testing.T) {
+	st, up, addr := newSplitGateway(t)
+	app := seedSplitApp(t, st, "gitea")
+	on, off := true, false
+	if _, err := st.UpdateApp(t.Context(), app.Name, store.AppUpdate{BodyInjection: &off}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = on
+
+	cl := dialSMTP(t, addr)
+	body := "From: NoReply@example.com\r\nSubject: no footer\r\n\r\nBody without footer.\r\n"
+	if err := sendToMany(t, cl, "gitea", "pw-gitea", "NoReply@example.com", []string{"a@example.com"}, body); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	data := string(up.messages[0].Data)
+	if strings.Contains(data, "退订") {
+		t.Errorf("footer injected despite body_injection=off:\n%s", data)
+	}
+	if !strings.Contains(data, "List-Unsubscribe:") {
+		t.Errorf("unsubscribe headers must still be injected:\n%s", data)
+	}
+}
+
+func TestSplitInjectionFailureForwardsUnchanged(t *testing.T) {
+	st, up, addr := newSplitGateway(t)
+	seedSplitApp(t, st, "gitea")
+
+	cl := dialSMTP(t, addr)
+	// Declares a multipart body but is unparseable: InjectFooter errors and
+	// the message must be forwarded with headers only, bytes untouched.
+	body := "From: NoReply@example.com\r\nSubject: broken\r\nContent-Type: multipart/mixed; boundary=\"XX\"\r\n\r\n--XX\r\nno final boundary here\r\n"
+	if err := sendToMany(t, cl, "gitea", "pw-gitea", "NoReply@example.com", []string{"a@example.com"}, body); err != nil {
+		t.Fatalf("send must succeed despite the broken body: %v", err)
+	}
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.messages) != 1 {
+		t.Fatalf("upstream got %d messages, want 1", len(up.messages))
+	}
+	msg := up.messages[0].Data
+	if !bytes.Contains(msg, []byte("no final boundary here\r\n")) || bytes.Contains(msg, []byte("List-Unsubscribe: <")) == false {
+		t.Errorf("expected original body plus injected headers:\n%q", msg)
+	}
+	if bytes.Contains(msg, []byte("退订：")) {
+		t.Errorf("footer must not be injected into an unparseable body:\n%q", msg)
 	}
 }

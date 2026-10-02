@@ -18,7 +18,7 @@ func TestRateLimitedReturns451AndLogs(t *testing.T) {
 		t.Fatalf("set rate: %v", err)
 	}
 
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, &fakeUpstream{})), ratelimit.NewLimiter(), nil, nil, nil, "")
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, &fakeUpstream{})), ratelimit.NewLimiter(), nil, nil, nil, "", "")
 	addr := startSMTP(t, be)
 
 	cl := dialSMTP(t, addr)
@@ -53,7 +53,7 @@ func TestAuthLockoutBansIP(t *testing.T) {
 
 	// Three failures inside the window ban the source IP.
 	lock := ratelimit.NewLockout(3, time.Minute, time.Hour)
-	be := NewBackend(st, nil, nil, lock, nil, nil, "")
+	be := NewBackend(st, nil, nil, lock, nil, nil, "", "")
 	s := &session{backend: be, remoteIP: "10.9.9.9"}
 
 	for i := 0; i < 3; i++ {
@@ -86,7 +86,7 @@ func TestSuccessfulAuthResetsFailures(t *testing.T) {
 	seedApp(t, st, "gitea", true)
 
 	lock := ratelimit.NewLockout(3, time.Minute, time.Hour)
-	be := NewBackend(st, nil, nil, lock, nil, nil, "")
+	be := NewBackend(st, nil, nil, lock, nil, nil, "", "")
 	s := &session{backend: be, remoteIP: "10.0.0.5"}
 
 	if err := s.authenticate("gitea", "wrong"); err == nil {

@@ -27,7 +27,7 @@ func startGatewaySMTP(t *testing.T, st *store.Store, rl *relay.Client) string {
 	if err != nil {
 		t.Fatalf("unsubscribe manager: %v", err)
 	}
-	be := smtpd.NewBackend(st, rl, nil, nil, nil, mgr, "https://relayward.test") // no limiter/lockout here
+	be := smtpd.NewBackend(st, rl, nil, nil, nil, mgr, "https://relayward.test", "") // no limiter/lockout here
 	srv := smtp.NewServer(be)
 	srv.Domain = "mail.example.com"
 	srv.AllowInsecureAuth = true

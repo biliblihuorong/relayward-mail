@@ -93,7 +93,7 @@ func serve(args []string) error {
 		ratelimit.DefaultFailureWindow,
 		ratelimit.DefaultBanDuration)
 
-	backend := smtpd.NewBackend(st, upstream, limiter, lockout, logger, unsubManager, cfg.Public.BaseURL)
+	backend := smtpd.NewBackend(st, upstream, limiter, lockout, logger, unsubManager, cfg.Public.BaseURL, cfg.Unsubscribe.FooterText)
 	smtpServer, err := newSMTPServer(cfg, backend)
 	if err != nil {
 		return err

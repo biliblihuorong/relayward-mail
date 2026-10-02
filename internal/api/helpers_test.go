@@ -185,12 +185,13 @@ func seedApp(t *testing.T, st *store.Store, name string) *store.App {
 		t.Fatal(err)
 	}
 	app := &store.App{
-		Name:         name,
-		PasswordHash: hash,
-		Enabled:      true,
-		Unsubscribe:  true,
-		AllowedFrom:  []string{"NoReply@example.com"},
-		RatePerHour:  500,
+		Name:          name,
+		PasswordHash:  hash,
+		Enabled:       true,
+		Unsubscribe:   true,
+		BodyInjection: true,
+		AllowedFrom:   []string{"NoReply@example.com"},
+		RatePerHour:   500,
 	}
 	if err := st.CreateApp(t.Context(), app, nil); err != nil {
 		t.Fatalf("seed app %s: %v", name, err)

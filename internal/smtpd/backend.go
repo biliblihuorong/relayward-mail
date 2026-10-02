@@ -23,14 +23,17 @@ import (
 // or lockout (tests) disables the corresponding throttle. unsub and baseURL
 // power the per-recipient split: with unsubscribe enabled apps, a nil manager
 // is a misconfiguration and message transfer fails with a temporary error.
+// footerText is the configured unsubscribe wording ({app} placeholder
+// included) used for body injection.
 type Backend struct {
-	store   *store.Store
-	relay   *relay.Client
-	logger  *slog.Logger
-	limiter *ratelimit.Limiter
-	lockout *ratelimit.Lockout
-	unsub   *unsub.Manager
-	baseURL string
+	store      *store.Store
+	relay      *relay.Client
+	logger     *slog.Logger
+	limiter    *ratelimit.Limiter
+	lockout    *ratelimit.Lockout
+	unsub      *unsub.Manager
+	baseURL    string
+	footerText string
 
 	mu       sync.Mutex
 	stopping bool
@@ -39,19 +42,20 @@ type Backend struct {
 
 // NewBackend builds a Backend. unsubMgr may be nil only when no app uses the
 // unsubscribe feature; publicBaseURL is the scheme+host the unsubscribe links
-// point at (from public.base_url).
-func NewBackend(st *store.Store, rl *relay.Client, limiter *ratelimit.Limiter, lockout *ratelimit.Lockout, logger *slog.Logger, unsubMgr *unsub.Manager, publicBaseURL string) *Backend {
+// point at (from public.base_url); footerText is unsubscribe.footer_text.
+func NewBackend(st *store.Store, rl *relay.Client, limiter *ratelimit.Limiter, lockout *ratelimit.Lockout, logger *slog.Logger, unsubMgr *unsub.Manager, publicBaseURL, footerText string) *Backend {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Backend{
-		store:   st,
-		relay:   rl,
-		logger:  logger,
-		limiter: limiter,
-		lockout: lockout,
-		unsub:   unsubMgr,
-		baseURL: strings.TrimSuffix(publicBaseURL, "/"),
+		store:      st,
+		relay:      rl,
+		logger:     logger,
+		limiter:    limiter,
+		lockout:    lockout,
+		unsub:      unsubMgr,
+		baseURL:    strings.TrimSuffix(publicBaseURL, "/"),
+		footerText: footerText,
 	}
 }
 

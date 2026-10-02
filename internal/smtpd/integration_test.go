@@ -183,7 +183,7 @@ func newGateway(t *testing.T) (*store.Store, *fakeUpstream, string) {
 	up := &fakeUpstream{}
 	addr := startFakeSMTPUpstream(t, up)
 	cl := newTestRelay(t, addr)
-	be := NewBackend(st, cl, nil, nil, nil, nil, "")
+	be := NewBackend(st, cl, nil, nil, nil, nil, "", "")
 	return st, up, startSMTP(t, be)
 }
 
@@ -341,7 +341,7 @@ func TestEndToEndUpstreamUnreachable(t *testing.T) {
 	st := openStore(t)
 	seedApp(t, st, "gitea", true)
 
-	be := NewBackend(st, relay.New(relay.Options{Host: "127.0.0.1", Port: 1, Username: "u", Password: "p", TLSMode: relay.TLSNone, HelloDomain: "relayward.test", Timeout: 5 * time.Second}), nil, nil, nil, nil, "")
+	be := NewBackend(st, relay.New(relay.Options{Host: "127.0.0.1", Port: 1, Username: "u", Password: "p", TLSMode: relay.TLSNone, HelloDomain: "relayward.test", Timeout: 5 * time.Second}), nil, nil, nil, nil, "", "")
 	addr := startSMTP(t, be)
 
 	cl := dialSMTP(t, addr)
@@ -358,7 +358,7 @@ func TestEndToEndUpstreamPermReject(t *testing.T) {
 	st := openStore(t)
 	seedApp(t, st, "gitea", true)
 
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, rejectingUpstream{})), nil, nil, nil, nil, "")
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, rejectingUpstream{})), nil, nil, nil, nil, "", "")
 	addr := startSMTP(t, be)
 
 	cl := dialSMTP(t, addr)
