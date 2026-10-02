@@ -26,16 +26,17 @@ var appNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // App is a client program that sends mail through relayward. Its name is the
 // SMTP username.
 type App struct {
-	ID           int64
-	Name         string
-	PasswordHash string
-	Enabled      bool
-	Unsubscribe  bool
-	AllowedFrom  []string
-	RatePerHour  int
-	DisplayName  string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID            int64
+	Name          string
+	PasswordHash  string
+	Enabled       bool
+	Unsubscribe   bool
+	BodyInjection bool
+	AllowedFrom   []string
+	RatePerHour   int
+	DisplayName   string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // CreateApp validates and inserts a new app. PasswordHash must already be an
@@ -63,10 +64,10 @@ func (s *Store) CreateApp(ctx context.Context, app *App, audit *AuditEntry) erro
 		switch {
 		case reviveErr == nil:
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE apps SET password_hash = ?, enabled = ?, unsubscribe = ?, allowed_from = ?,
+				`UPDATE apps SET password_hash = ?, enabled = ?, unsubscribe = ?, body_injection = ?, allowed_from = ?,
 				    rate_per_hour = ?, display_name = ?, deleted_at = NULL, updated_at = ?
 				  WHERE id = ?`,
-				app.PasswordHash, boolToInt(app.Enabled), boolToInt(app.Unsubscribe),
+				app.PasswordHash, boolToInt(app.Enabled), boolToInt(app.Unsubscribe), boolToInt(app.BodyInjection),
 				string(allowedFrom), app.RatePerHour, app.DisplayName, now.Unix(), revivedID); err != nil {
 				return fmt.Errorf("revive app %q: %w", app.Name, err)
 			}
@@ -79,9 +80,9 @@ func (s *Store) CreateApp(ctx context.Context, app *App, audit *AuditEntry) erro
 		}
 
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO apps (name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			app.Name, app.PasswordHash, boolToInt(app.Enabled), boolToInt(app.Unsubscribe),
+			`INSERT INTO apps (name, password_hash, enabled, unsubscribe, body_injection, allowed_from, rate_per_hour, display_name, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			app.Name, app.PasswordHash, boolToInt(app.Enabled), boolToInt(app.Unsubscribe), boolToInt(app.BodyInjection),
 			string(allowedFrom), app.RatePerHour, app.DisplayName, now.Unix(), now.Unix())
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -112,11 +113,12 @@ func isUniqueViolation(err error) bool {
 // AppUpdate carries the fields PATCH may change; nil pointers leave the
 // column unchanged. A non-nil AllowedFrom must not be empty.
 type AppUpdate struct {
-	Enabled     *bool
-	Unsubscribe *bool
-	RatePerHour *int
-	AllowedFrom []string
-	DisplayName *string
+	Enabled       *bool
+	Unsubscribe   *bool
+	BodyInjection *bool
+	RatePerHour   *int
+	AllowedFrom   []string
+	DisplayName   *string
 }
 
 // UpdateApp applies the given changes to an active app and returns the
@@ -135,6 +137,10 @@ func (s *Store) UpdateApp(ctx context.Context, name string, upd AppUpdate, audit
 	if upd.Unsubscribe != nil {
 		sets = append(sets, "unsubscribe = ?")
 		args = append(args, boolToInt(*upd.Unsubscribe))
+	}
+	if upd.BodyInjection != nil {
+		sets = append(sets, "body_injection = ?")
+		args = append(args, boolToInt(*upd.BodyInjection))
 	}
 	if upd.RatePerHour != nil {
 		if *upd.RatePerHour <= 0 {
@@ -172,7 +178,7 @@ func (s *Store) UpdateApp(ctx context.Context, name string, upd AppUpdate, audit
 			return fmt.Errorf("update app %q: %w", name, ErrNotFound)
 		}
 		updated, err = scanApp(tx.QueryRowContext(ctx,
-			`SELECT id, name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at
+			`SELECT id, name, password_hash, enabled, unsubscribe, body_injection, allowed_from, rate_per_hour, display_name, created_at, updated_at
 			 FROM apps WHERE name = ?`, name))
 		return err
 	})
@@ -228,21 +234,21 @@ func (s *Store) RotateAppPassword(ctx context.Context, name, passwordHash string
 // deleted.
 func (s *Store) GetAppByID(ctx context.Context, id int64) (*App, error) {
 	return scanApp(s.db.QueryRowContext(ctx,
-		`SELECT id, name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at
+		`SELECT id, name, password_hash, enabled, unsubscribe, body_injection, allowed_from, rate_per_hour, display_name, created_at, updated_at
 		 FROM apps WHERE id = ?`, id))
 }
 
 // GetAppByName returns the active app whose name equals the SMTP username.
 func (s *Store) GetAppByName(ctx context.Context, name string) (*App, error) {
 	return scanApp(s.db.QueryRowContext(ctx,
-		`SELECT id, name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at
+		`SELECT id, name, password_hash, enabled, unsubscribe, body_injection, allowed_from, rate_per_hour, display_name, created_at, updated_at
 		 FROM apps WHERE name = ? AND deleted_at IS NULL`, name))
 }
 
 // ListApps returns all active apps ordered by name.
 func (s *Store) ListApps(ctx context.Context) ([]App, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at
+		`SELECT id, name, password_hash, enabled, unsubscribe, body_injection, allowed_from, rate_per_hour, display_name, created_at, updated_at
 		 FROM apps WHERE deleted_at IS NULL ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list apps: %w", err)
@@ -272,7 +278,7 @@ func scanApp(row appScanner) (*App, error) {
 	var app App
 	var allowedFrom string
 	var created, updated int64
-	err := row.Scan(&app.ID, &app.Name, &app.PasswordHash, &app.Enabled, &app.Unsubscribe,
+	err := row.Scan(&app.ID, &app.Name, &app.PasswordHash, &app.Enabled, &app.Unsubscribe, &app.BodyInjection,
 		&allowedFrom, &app.RatePerHour, &app.DisplayName, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("get app: %w", ErrNotFound)
