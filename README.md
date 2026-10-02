@@ -2,7 +2,7 @@
 
 Relayward 是一个轻量发信网关：所有程序改连网关，网关独占提供商的真实 key，并在转发时按程序记录、限流、注入退订。单个 Go 二进制 + 一个 SQLite 文件，部署零依赖。
 
-按[计划书](docs/Relayward%20邮件网关计划书.md)分五个里程碑开发，当前进度：**M3 已完成**。
+按[计划书](docs/Relayward%20邮件网关计划书.md)分五个里程碑开发，当前进度：**M4 已完成**。
 
 ## 当前进度
 
@@ -11,7 +11,7 @@ Relayward 是一个轻量发信网关：所有程序改连网关，网关独占�
 | M1 可用的中继 | ✅ 已完成 | SMTP 认证、发件地址校验、转发上游、发送日志、首次启动管理员 token、/healthz |
 | M2 管理 API | ✅ 已完成 | 程序和 token 的增删改查、三种角色、审计日志、失败锁定、限流、IP 白名单 |
 | M3 退订 | ✅ 已完成 | 按收件人拆信、退订头注入、退订页面、拦截、退订 API |
-| M4 正文注入 | 未开始 | MIME 解析，在纯文本和 HTML 部分插入退订链接 |
+| M4 正文注入 | ✅ 已完成 | MIME 解析，在纯文本和 HTML 部分插入退订链接 |
 | M5 内嵌管理页 | 未开始 | embed 打包的管理页面，只调用管理 API |
 
 ## 快速开始
@@ -53,7 +53,7 @@ export UPSTREAM_KEY=你的提供商发信key
 | GET | /api/apps | 程序列表 | viewer |
 | GET | /api/apps/{name} | 单个程序配置与统计 | viewer |
 | POST | /api/apps | 创建程序，响应含一次性 SMTP 密码 | operator |
-| PATCH | /api/apps/{name} | 启停、退订开关、限流、允许发件地址 | operator |
+| PATCH | /api/apps/{name} | 启停、退订开关、正文注入、限流、允许发件地址 | operator |
 | POST | /api/apps/{name}/rotate | 重置 SMTP 密码，旧密码立即失效 | operator |
 | DELETE | /api/apps/{name} | 删除程序（软删除，日志保留） | operator |
 | GET | /api/unsubscribes | 退订列表，支持 app/email 过滤，游标分页 | viewer |
@@ -96,6 +96,21 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 管理员可通过退订 API 手动添加 / 恢复订阅（见上表），页面与管理 API 的退订写操作都进审计日志。
 
 `unsubscribe.secret` 未设置时首次启动自动生成并写入 `data/unsubscribe_secret`（0600）；更换 secret 会使所有已发出的退订链接失效。
+
+### 正文注入（M4）
+
+退订开关与正文注入开关（`body_injection`，默认开）都打开时，拆信后的每个副本还会在文本部分追加页脚，附件与其它二进制部分不动：
+
+- **text/html**：在最后一个 `</body>` 前插入浅灰水平线 + 12px 灰色小字，`unsubscribe.footer_text` 文案（支持 `{app}` 占位符，取程序 display_name）+「退订」链接；没有 `</body>` 则追加到末尾。
+- **text/plain**：末尾追加空行 + `-- ` 分隔行 + 「退订：<链接>」。
+- 按原部件的编码（quoted-printable / base64）解码、插入、再编码；7bit 部件自动升级为 quoted-printable；字符集改写/补齐为 utf-8。
+- **跳过注入**：multipart/signed、multipart/encrypted、附件（Content-Disposition: attachment）、非 UTF-8 字符集部件；程序自带 DKIM-Signature 时整个正文不注入（记 WARN），退订头仍注入。
+- **解析失败**（如残缺的 multipart）：正文原样转发，只注入退订头。
+
+```bash
+# 按程序关闭正文注入
+curl -s -X PATCH http://127.0.0.1:8081/api/apps/gitea -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"body_injection": false}'
+```
 
 ### 本机 CLI
 
@@ -200,9 +215,27 @@ make run    # 构建并启动
 
 自动化覆盖：unsub 包 93%（token 加解密/篡改检测/跨密钥、头部注入、Bcc 剥离含折行）、smtpd 88%（拆信逐收件人注入、拦截 250、全部拦截、退订关原样转发含 Bcc、部分上游失败 451、manager 缺失 451）、api 83%（退订端点 + 角色 + 幂等 + 审计）、web 81%（确认页无副作用、一键退订、CSRF、重新订阅、安全响应头）、store 79%（退订表 CRUD/过滤/分页/审计事务）。
 
+## M4 验收自测结果
+
+验收标准（计划书）：用 3 个以上真实程序的邮件样本测试，内容不乱码、附件完好。
+
+样本在 `internal/unsub/testdata/`（Gitea 风格 alternative、GitLab 风格 mixed+PDF 附件、PGP 签名件），golden 文件对比输出，并用 Python email 解析器独立复核解码结果。
+
+| 场景 | 预期 | 实际 |
+| ---- | ---- | ---- |
+| multipart/alternative（7bit 纯文本 + qp HTML，中文主题） | 两部分都注入页脚，内容解码后无乱码 | ✅ 纯文本升级 qp 且补 charset=utf-8；HTML 在 `</body>` 前插入灰线小字 |
+| multipart/mixed 含 base64 PDF 附件（中文 base64 HTML + qp 纯文本） | 附件字节级不变，两个文本部分注入 | ✅ 附件解码后与原文件完全一致 |
+| multipart/signed（PGP） | 正文完全不注入，仅注退订头 | ✅ 输出与输入逐字节一致（签名区完整） |
+| 真实二进制冒烟（golden 样本原文过网关） | 上游收到的副本可解析、页脚与退订头齐全 | ✅ 14/14，含 PATCH body_injection=false 后停止注入 |
+| DKIM-Signature 存在 | 跳过正文注入 + WARN 日志，退订头照常 | ✅ |
+| 残缺 multipart（缺闭合边界） | 正文原样转发，不报错给程序 | ✅ 250，原文 + 退订头 |
+| CRLF 完整性 | 输出无裸 LF | ✅ 单测断言 + golden 对比 |
+
+自动化覆盖：unsub 91%（注入/跳过/转义/确定性/golden）、smtpd 89%（HTML 与纯文本注入、DKIM 跳过、开关关闭、解析失败回退）、store 78%（body_injection 列读写）、api 83%（body_injection 创建与 PATCH）。
+
 ## 冒烟测试（真实二进制）
 
-每次里程碑用真实二进制 + 本地假上游 + 真实 HTTP/SMTP 客户端跑端到端冒烟：M1 8 项、M2 13 项、M3 36 项全部通过（脚本不入库，覆盖上述验收场景的真实进程行为，包括三端口同时监听与 0600 密钥文件生成）。
+每次里程碑用真实二进制 + 本地假上游 + 真实 HTTP/SMTP 客户端跑端到端冒烟：M1 8 项、M2 13 项、M3 36 项、M4 14 项全部通过（脚本不入库，覆盖上述验收场景的真实进程行为，包括三端口同时监听与 0600 密钥文件生成）。
 
 ## 安全说明
 
