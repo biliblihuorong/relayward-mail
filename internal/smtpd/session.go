@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/mail"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -30,6 +31,19 @@ var (
 	errPermRelay   = &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 3, 0}, Message: "message not accepted by upstream provider"}
 	errRateLimited = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "rate limit exceeded, try again later"}
 )
+
+// recoverSession turns a panic in a session handler into a temporary SMTP
+// error so that one bad message cannot take the whole gateway down. Use it as
+// `defer s.recoverSession(&err)` in handlers with a named error result.
+func (s *session) recoverSession(errp *error) {
+	if r := recover(); r != nil {
+		s.backend.logger.Error("panic in smtp handler",
+			slog.Any("panic", r),
+			slog.String("stack", string(debug.Stack())),
+			slog.String("remote_ip", s.remoteIP))
+		*errp = errTempRelay
+	}
+}
 
 // session is one SMTP connection for one client program.
 type session struct {
@@ -68,7 +82,8 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 // authenticate checks the credentials and marks the session as authenticated.
 // Every failure maps to the same 535 response so that the reply does not
 // reveal whether the account exists, is disabled, or the IP is banned.
-func (s *session) authenticate(username, password string) error {
+func (s *session) authenticate(username, password string) (err error) {
+	defer s.recoverSession(&err)
 	if s.backend.lockout != nil && s.backend.lockout.Banned(s.remoteIP) {
 		return errAuthFailed
 	}
@@ -111,7 +126,8 @@ func (s *session) recordAuthFailure() {
 }
 
 // Mail implements smtp.Session.
-func (s *session) Mail(from string, _ *smtp.MailOptions) error {
+func (s *session) Mail(from string, _ *smtp.MailOptions) (err error) {
+	defer s.recoverSession(&err)
 	if s.app == nil {
 		return errMustAuth
 	}
@@ -146,13 +162,19 @@ func senderAllowed(allowed []string, addr string) bool {
 }
 
 // Rcpt implements smtp.Session.
-func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
+func (s *session) Rcpt(to string, _ *smtp.RcptOptions) (err error) {
+	defer s.recoverSession(&err)
 	if s.app == nil {
 		return errMustAuth
 	}
 	addr, err := mail.ParseAddress(strings.Trim(to, "<>"))
 	if err != nil {
 		return &smtp.SMTPError{Code: 501, EnhancedCode: smtp.EnhancedCode{5, 1, 3}, Message: "invalid recipient address"}
+	}
+	for _, existing := range s.rcpts {
+		if store.NormalizeEmail(existing) == store.NormalizeEmail(addr.Address) {
+			return nil // duplicate recipient: accept but deliver once
+		}
 	}
 	s.rcpts = append(s.rcpts, addr.Address)
 	return nil
@@ -161,7 +183,8 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 // Data implements smtp.Session: forward the message to the upstream provider
 // and log one row per recipient. Apps with the unsubscribe switch on are
 // split per recipient, so every copy carries its own List-Unsubscribe link.
-func (s *session) Data(r io.Reader) error {
+func (s *session) Data(r io.Reader) (err error) {
+	defer s.recoverSession(&err)
 	if s.app == nil {
 		return errMustAuth
 	}
@@ -239,14 +262,15 @@ func (s *session) relaySplit(data []byte, meta messageMeta, size int64, start ti
 			slog.String("app", s.app.Name), slog.String("msg_id", meta.MessageID))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
-	defer cancel()
-
 	var firstErr error
 	for _, rcpt := range s.rcpts {
 		normalized := store.NormalizeEmail(rcpt)
 
-		suppressed, err := s.backend.store.IsUnsubscribed(ctx, s.app.ID, normalized)
+		// Each lookup gets its own deadline: the loop runs one upstream
+		// round trip per recipient and may outlast any single timeout.
+		lookupCtx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+		suppressed, err := s.backend.store.IsUnsubscribed(lookupCtx, s.app.ID, normalized)
+		cancel()
 		if err != nil {
 			s.backend.logger.Error("unsubscribe lookup",
 				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))

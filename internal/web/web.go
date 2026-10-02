@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -59,7 +60,21 @@ func New(opts Options) http.Handler {
 	}
 	tpl := template.Must(template.ParseFS(templatesFS, "templates/*.html"))
 	h := &handler{store: opts.Store, unsub: opts.Unsub, logger: opts.Logger, tpl: tpl}
-	return securityHeaders(http.MaxBytesHandler(h, maxBodyBytes))
+	return securityHeaders(h.recoverPanics(http.MaxBytesHandler(h, maxBodyBytes)))
+}
+
+// recoverPanics logs a handler panic and answers a generic 500 page.
+func (h *handler) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				h.logger.Error("panic in unsubscribe handler",
+					slog.Any("panic", rec), slog.String("stack", string(debug.Stack())))
+				writeError(w, r, http.StatusInternalServerError, "处理失败，请稍后再试")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // securityHeaders applies the plan's response headers. The unsubscribe page

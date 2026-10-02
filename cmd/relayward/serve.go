@@ -146,6 +146,7 @@ func serve(args []string) error {
 
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return monitor.Run(groupCtx) })
+	group.Go(func() error { return runRetention(groupCtx, st, cfg.LogRetentionDays, logger) })
 	group.Go(func() error {
 		if err := smtpServer.Serve(smtpListener); err != nil && !errors.Is(err, smtp.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("smtp server: %w", err)

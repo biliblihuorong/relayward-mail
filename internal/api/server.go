@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"relayward-mail/internal/ratelimit"
@@ -88,7 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.requireRole(store.RoleAdmin, s.handleRevokeToken))
 	mux.HandleFunc("GET /api/audit", s.requireRole(store.RoleAdmin, s.handleAudit))
 
-	return securityHeaders(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes)))
+	return securityHeaders(s.recoverMiddleware(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes))))
 }
 
 // HealthzHandler returns the standalone /healthz handler so the public
@@ -105,6 +106,23 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// recoverMiddleware logs a handler panic and answers a generic 500 without
+// internal details.
+func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.logger.Error("panic in management handler",
+					slog.Any("panic", rec),
+					slog.String("path", r.URL.Path),
+					slog.String("stack", string(debug.Stack())))
+				writeError(w, http.StatusInternalServerError, codeInternal, "internal error")
+			}
+		}()
 		next.ServeHTTP(w, r)
 	})
 }

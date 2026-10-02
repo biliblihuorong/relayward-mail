@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/store"
 )
 
@@ -501,5 +502,35 @@ func TestDeleteApp(t *testing.T) {
 
 	if _, err := st.GetAppByName(t.Context(), "alpha"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("GetAppByName after delete: %v, want ErrNotFound", err)
+	}
+}
+
+func TestPatchKeepsRateBucketUnlessRateChanges(t *testing.T) {
+	limiter := ratelimit.NewLimiter()
+	st, ts := startAPI(t, func(o *Options) { o.Limiter = limiter })
+	app := seedApp(t, st, "gitea")
+	op := seedToken(t, st, "op", store.RoleOperator)
+
+	for range 500 {
+		if !limiter.Allow(app.ID, 500) {
+			t.Fatal("bucket drained early")
+		}
+	}
+	if limiter.Allow(app.ID, 500) {
+		t.Fatal("bucket should be empty")
+	}
+
+	if code, _, _ := apiCall(t, ts, http.MethodPatch, "/api/apps/gitea", op, map[string]any{"display_name": "Gitea"}); code != http.StatusOK {
+		t.Fatalf("patch status = %d", code)
+	}
+	if limiter.Allow(app.ID, 500) {
+		t.Fatal("patching an unrelated field must not refill the bucket")
+	}
+
+	if code, _, _ := apiCall(t, ts, http.MethodPatch, "/api/apps/gitea", op, map[string]any{"rate_per_hour": 10}); code != http.StatusOK {
+		t.Fatalf("patch status = %d", code)
+	}
+	if !limiter.Allow(app.ID, 10) {
+		t.Fatal("changing the rate should install a fresh bucket")
 	}
 }

@@ -180,7 +180,9 @@ func (s *Server) handlePatchApp(w http.ResponseWriter, r *http.Request) {
 		s.writeAppError(w, err)
 		return
 	}
-	if s.limiter != nil {
+	// Only a changed rate replaces the bucket; other edits must not hand the
+	// app a fresh full quota.
+	if s.limiter != nil && req.RatePerHour != nil {
 		s.limiter.Update(app.ID, app.RatePerHour)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"app": toAppJSON(app)})

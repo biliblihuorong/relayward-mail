@@ -2,6 +2,7 @@ package smtpd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -465,5 +466,34 @@ func TestSplitInjectionFailureForwardsUnchanged(t *testing.T) {
 	}
 	if bytes.Contains(msg, []byte("退订：")) {
 		t.Errorf("footer must not be injected into an unparseable body:\n%q", msg)
+	}
+}
+
+func TestSplitDeduplicatesRecipients(t *testing.T) {
+	st, up, addr := newSplitGateway(t)
+	seedSplitApp(t, st, "gitea")
+
+	cl := dialSMTP(t, addr)
+	if err := sendToMany(t, cl, "gitea", "pw-gitea", "NoReply@example.com",
+		[]string{"a@example.com", "A@Example.com", "b@example.com"}, "Subject: dup\r\n\r\nhi\r\n"); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if len(up.messages) != 2 {
+		t.Fatalf("upstream got %d messages, want 2 (duplicate recipient delivered once)", len(up.messages))
+	}
+}
+
+func TestRecoverSessionTurnsPanicIntoTempError(t *testing.T) {
+	s := &session{backend: NewBackend(nil, nil, nil, nil, nil, nil, "", "")}
+	err := func() (err error) {
+		defer s.recoverSession(&err)
+		panic("boom")
+	}()
+	var se *smtp.SMTPError
+	if !errors.As(err, &se) || se.Code != 451 {
+		t.Fatalf("err = %v, want a 451 SMTPError", err)
 	}
 }
