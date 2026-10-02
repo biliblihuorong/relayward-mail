@@ -26,6 +26,8 @@ import (
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/smtpd"
 	"relayward-mail/internal/store"
+	"relayward-mail/internal/unsub"
+	"relayward-mail/internal/web"
 )
 
 // dbFileName is the SQLite database file inside the configured data_dir.
@@ -66,6 +68,15 @@ func serve(args []string) error {
 		return err
 	}
 
+	unsubSecret, err := ensureUnsubscribeSecret(cfg, logger)
+	if err != nil {
+		return err
+	}
+	unsubManager, err := unsub.NewManager(unsubSecret)
+	if err != nil {
+		return fmt.Errorf("init unsubscribe manager: %w", err)
+	}
+
 	upstream := relay.New(relay.Options{
 		Host:        cfg.Upstream.Host,
 		Port:        cfg.Upstream.Port,
@@ -82,7 +93,7 @@ func serve(args []string) error {
 		ratelimit.DefaultFailureWindow,
 		ratelimit.DefaultBanDuration)
 
-	backend := smtpd.NewBackend(st, upstream, limiter, lockout, logger)
+	backend := smtpd.NewBackend(st, upstream, limiter, lockout, logger, unsubManager, cfg.Public.BaseURL)
 	smtpServer, err := newSMTPServer(cfg, backend)
 	if err != nil {
 		return err
@@ -93,19 +104,20 @@ func serve(args []string) error {
 	}
 
 	startedAt := time.Now()
+	apiSrv := api.New(api.Options{
+		Store:       st,
+		Monitor:     monitor,
+		Limiter:     limiter,
+		Lockout:     lockout,
+		DataDir:     cfg.DataDir,
+		Version:     version,
+		StartedAt:   startedAt,
+		Logger:      logger,
+		IPAllowlist: cfg.Admin.IPAllowlist,
+	})
 	apiServer := &http.Server{
-		Addr: cfg.Admin.Listen,
-		Handler: api.New(api.Options{
-			Store:       st,
-			Monitor:     monitor,
-			Limiter:     limiter,
-			Lockout:     lockout,
-			DataDir:     cfg.DataDir,
-			Version:     version,
-			StartedAt:   startedAt,
-			Logger:      logger,
-			IPAllowlist: cfg.Admin.IPAllowlist,
-		}).Handler(),
+		Addr:              cfg.Admin.Listen,
+		Handler:           apiSrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -114,6 +126,22 @@ func serve(args []string) error {
 	adminListener, err := net.Listen("tcp", cfg.Admin.Listen)
 	if err != nil {
 		return fmt.Errorf("listen admin: %w", err)
+	}
+
+	publicMux := http.NewServeMux()
+	publicMux.Handle("GET /healthz", apiSrv.HealthzHandler())
+	publicMux.Handle("/u/", web.New(web.Options{Store: st, Unsub: unsubManager, Logger: logger}))
+	publicServer := &http.Server{
+		Addr:              cfg.Public.Listen,
+		Handler:           publicMux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	publicListener, err := net.Listen("tcp", cfg.Public.Listen)
+	if err != nil {
+		return fmt.Errorf("listen public: %w", err)
 	}
 
 	group, groupCtx := errgroup.WithContext(ctx)
@@ -131,9 +159,15 @@ func serve(args []string) error {
 		return nil
 	})
 	group.Go(func() error {
+		if err := publicServer.Serve(publicListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("public http server: %w", err)
+		}
+		return nil
+	})
+	group.Go(func() error {
 		<-groupCtx.Done()
 		logger.Info("shutting down")
-		shutdown(smtpListener, smtpServer, backend, apiServer, logger)
+		shutdown(smtpListener, smtpServer, backend, apiServer, publicServer, logger)
 		return nil
 	})
 
@@ -173,7 +207,7 @@ func newSMTPServer(cfg *config.Config, backend smtp.Backend) (*smtp.Server, erro
 
 // shutdown stops accepting new work, waits for in-flight message transfers
 // and requests, and finally closes everything.
-func shutdown(smtpListener net.Listener, smtpServer *smtp.Server, backend *smtpd.Backend, apiServer *http.Server, logger *slog.Logger) {
+func shutdown(smtpListener net.Listener, smtpServer *smtp.Server, backend *smtpd.Backend, apiServer, publicServer *http.Server, logger *slog.Logger) {
 	if err := smtpListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		logger.Warn("close smtp listener", slog.String("err", err.Error()))
 	}
@@ -190,6 +224,9 @@ func shutdown(smtpListener net.Listener, smtpServer *smtp.Server, backend *smtpd
 	defer cancel2()
 	if err := apiServer.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("shutdown admin http server", slog.String("err", err.Error()))
+	}
+	if err := publicServer.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("shutdown public http server", slog.String("err", err.Error()))
 	}
 }
 
