@@ -1,5 +1,5 @@
-// Package api serves the management HTTP surface. M1 only exposes
-// /healthz; the token-authenticated management endpoints arrive in M2.
+// Package api serves the management HTTP surface: /healthz plus the
+// token-authenticated management API introduced in M2.
 package api
 
 import (
@@ -7,99 +7,82 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
-	"relayward-mail/internal/relay"
+	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/store"
 )
 
-// UpstreamMonitor probes the upstream provider in the background so that
-// /healthz can report connectivity without dialing the provider per request.
-type UpstreamMonitor struct {
-	client   *relay.Client
-	interval time.Duration
-	logger   *slog.Logger
+// maxBodyBytes caps request bodies for every management endpoint.
+const maxBodyBytes = 1 << 20
 
-	mu      sync.Mutex
-	healthy bool
-}
+// requestTimeout bounds each management request.
+const requestTimeout = 10 * time.Second
 
-// NewUpstreamMonitor builds a monitor that probes every interval.
-func NewUpstreamMonitor(client *relay.Client, interval time.Duration, logger *slog.Logger) *UpstreamMonitor {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &UpstreamMonitor{client: client, interval: interval, logger: logger}
-}
-
-// Run probes immediately and then on every tick until ctx is done.
-func (m *UpstreamMonitor) Run(ctx context.Context) error {
-	m.probe(ctx)
-	ticker := time.NewTicker(m.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			m.probe(ctx)
-		}
-	}
-}
-
-func (m *UpstreamMonitor) probe(ctx context.Context) {
-	err := m.client.Probe(ctx)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err == nil {
-		m.healthy = true
-		return
-	}
-	m.healthy = false
-	m.logger.Warn("upstream probe failed", slog.String("err", err.Error()))
-}
-
-// Healthy reports the result of the most recent probe.
-func (m *UpstreamMonitor) Healthy() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.healthy
+// Options configures the management API server. Limiter and Lockout may be
+// nil (tests without throttles); IPAllowlist empty disables the filter.
+type Options struct {
+	Store       *store.Store
+	Monitor     *UpstreamMonitor
+	Limiter     *ratelimit.Limiter
+	Lockout     *ratelimit.Lockout
+	DataDir     string
+	Version     string
+	StartedAt   time.Time
+	Logger      *slog.Logger
+	IPAllowlist []string
 }
 
 // Server is the management HTTP server.
 type Server struct {
 	store     *store.Store
 	monitor   *UpstreamMonitor
+	limiter   *ratelimit.Limiter
+	lockout   *ratelimit.Lockout
+	allowlist []ipRule
+	dataDir   string
 	logger    *slog.Logger
 	version   string
 	startedAt time.Time
 }
 
 // New builds the management API server.
-func New(st *store.Store, monitor *UpstreamMonitor, version string, startedAt time.Time, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
+func New(opts Options) *Server {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
 	return &Server{
-		store:     st,
-		monitor:   monitor,
-		logger:    logger,
-		version:   version,
-		startedAt: startedAt,
+		store:     opts.Store,
+		monitor:   opts.Monitor,
+		limiter:   opts.Limiter,
+		lockout:   opts.Lockout,
+		allowlist: parseIPAllowlist(opts.IPAllowlist),
+		dataDir:   opts.DataDir,
+		logger:    opts.Logger,
+		version:   opts.Version,
+		startedAt: opts.StartedAt,
 	}
 }
-
-// maxBodyBytes caps request bodies for every management endpoint.
-const maxBodyBytes = 1 << 20
 
 // Handler returns the http.Handler for the management surface.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	return securityHeaders(http.MaxBytesHandler(mux, maxBodyBytes))
+
+	mux.HandleFunc("GET /api/stats", s.requireRole(store.RoleViewer, s.handleStats))
+	mux.HandleFunc("GET /api/messages", s.requireRole(store.RoleViewer, s.handleMessages))
+	mux.HandleFunc("GET /api/apps", s.requireRole(store.RoleViewer, s.handleListApps))
+	mux.HandleFunc("GET /api/apps/{name}", s.requireRole(store.RoleViewer, s.handleGetApp))
+	mux.HandleFunc("POST /api/apps", s.requireRole(store.RoleOperator, s.handleCreateApp))
+	mux.HandleFunc("PATCH /api/apps/{name}", s.requireRole(store.RoleOperator, s.handlePatchApp))
+	mux.HandleFunc("POST /api/apps/{name}/rotate", s.requireRole(store.RoleOperator, s.handleRotateApp))
+	mux.HandleFunc("DELETE /api/apps/{name}", s.requireRole(store.RoleOperator, s.handleDeleteApp))
+	mux.HandleFunc("GET /api/tokens", s.requireRole(store.RoleAdmin, s.handleListTokens))
+	mux.HandleFunc("POST /api/tokens", s.requireRole(store.RoleAdmin, s.handleCreateToken))
+	mux.HandleFunc("DELETE /api/tokens/{id}", s.requireRole(store.RoleAdmin, s.handleRevokeToken))
+	mux.HandleFunc("GET /api/audit", s.requireRole(store.RoleAdmin, s.handleAudit))
+
+	return securityHeaders(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes)))
 }
 
 // securityHeaders applies the response headers mandated by the plan to every
@@ -110,6 +93,15 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
+	})
+}
+
+// requestTimeoutMiddleware bounds every request with a context deadline.
+func requestTimeoutMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -184,16 +176,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // lookupToken validates the Bearer token (if any) and returns the token row
-// when it is valid and not expired; otherwise nil. Role and expiry checks
-// keep the detail endpoint from leaking to revoked or stale credentials.
+// when it is valid and not expired; otherwise nil. Failures here do not feed
+// the lockout: only /api authentication attempts do.
 func (s *Server) lookupToken(r *http.Request) *store.AdminToken {
-	auth := r.Header.Get("Authorization")
-	prefix := "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return nil
-	}
-	raw := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
-	if raw == "" {
+	raw, ok := bearerFromRequest(r)
+	if !ok {
 		return nil
 	}
 
