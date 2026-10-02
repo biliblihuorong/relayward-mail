@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #f5f6f8; margin: 0; }
+  .card { max-width: 420px; margin: 12vh auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size: 18px; margin: 0 0 12px; color: #1a1a1a; }
+  p { color: #444; font-size: 14px; line-height: 1.7; margin: 8px 0; }
+  button { margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: #2e7d32; color: #fff; font-size: 15px; cursor: pointer; }
+  button:hover { background: #27672b; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>{{.Title}}</h1>
+  <p>{{.Message}}</p>
+  {{if .ShowResubscribe}}
+  <form method="post" action="/u/{{.Token}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="action" value="resubscribe">
+    <button type="submit">重新订阅</button>
+  </form>
+  {{end}}
+</div>
+</body>
+</html>

@@ -1,0 +1,33 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    # The plan allows ignoring Close return values in read-only/best-effort
+    # cleanup paths; Rollback after a failed transaction is the same class.
+    # errcheck matches concrete types, so list them explicitly.
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*relayward-mail/internal/store.Store).Close
+        - (*github.com/emersion/go-smtp.Server).Close
+        - (*net/smtp.Client).Close
+        - (*github.com/emersion/go-smtp.Client).Close
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
