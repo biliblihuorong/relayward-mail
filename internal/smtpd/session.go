@@ -22,11 +22,12 @@ const authTimeout = 10 * time.Second
 // Error responses shared by all sessions. They are *smtp.SMTPError so that
 // go-smtp uses the exact status codes required by the plan.
 var (
-	errAuthFailed = &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "authentication failed"}
-	errMustAuth   = &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "authentication required"}
-	errBadSender  = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "sender address not allowed"}
-	errTempRelay  = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporarily unable to relay, try again later"}
-	errPermRelay  = &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 3, 0}, Message: "message not accepted by upstream provider"}
+	errAuthFailed  = &smtp.SMTPError{Code: 535, EnhancedCode: smtp.EnhancedCode{5, 7, 8}, Message: "authentication failed"}
+	errMustAuth    = &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "authentication required"}
+	errBadSender   = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "sender address not allowed"}
+	errTempRelay   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporarily unable to relay, try again later"}
+	errPermRelay   = &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 3, 0}, Message: "message not accepted by upstream provider"}
+	errRateLimited = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "rate limit exceeded, try again later"}
 )
 
 // session is one SMTP connection for one client program.
@@ -65,8 +66,12 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 
 // authenticate checks the credentials and marks the session as authenticated.
 // Every failure maps to the same 535 response so that the reply does not
-// reveal whether the account exists or is disabled.
+// reveal whether the account exists, is disabled, or the IP is banned.
 func (s *session) authenticate(username, password string) error {
+	if s.backend.lockout != nil && s.backend.lockout.Banned(s.remoteIP) {
+		return errAuthFailed
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), authTimeout)
 	defer cancel()
 
@@ -76,20 +81,32 @@ func (s *session) authenticate(username, password string) error {
 			// Log storage problems, but keep the same outward response.
 			s.backend.logger.Error("authenticate: load app", slog.String("app", username), slog.String("err", err.Error()))
 		}
+		s.recordAuthFailure()
 		return errAuthFailed
 	}
 	if !app.Enabled {
+		s.recordAuthFailure()
 		return errAuthFailed
 	}
 	ok, err := store.VerifyPassword(app.PasswordHash, password)
 	if err != nil || !ok {
+		s.recordAuthFailure()
 		return errAuthFailed
+	}
+	if s.backend.lockout != nil {
+		s.backend.lockout.Reset(s.remoteIP)
 	}
 
 	s.app = app
 	s.backend.logger.Info("smtp authenticated",
 		slog.String("app", app.Name), slog.String("remote_ip", s.remoteIP))
 	return nil
+}
+
+func (s *session) recordAuthFailure() {
+	if s.backend.lockout != nil {
+		s.backend.lockout.RecordFailure(s.remoteIP)
+	}
 }
 
 // Mail implements smtp.Session.
@@ -164,6 +181,18 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	meta := parseMessageMeta(data)
+
+	// Per-app hourly limit: reject the whole transaction with 451 so the
+	// client program retries later, and log rate_limited rows.
+	if s.backend.limiter != nil && !s.backend.limiter.Allow(s.app.ID, s.app.RatePerHour) {
+		s.logAndStore(store.StatusRateLimited, "", meta, int64(len(data)), time.Since(start))
+		s.backend.logger.Warn("rate limited",
+			slog.String("app", s.app.Name),
+			slog.Int("rate_per_hour", s.app.RatePerHour),
+			slog.String("remote_ip", s.remoteIP))
+		return errRateLimited
+	}
+
 	relayErr := s.backend.relay.Send(context.Background(), s.mailFrom, s.rcpts, data)
 
 	status := store.StatusSent

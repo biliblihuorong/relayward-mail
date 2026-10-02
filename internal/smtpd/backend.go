@@ -12,28 +12,31 @@ import (
 
 	"github.com/emersion/go-smtp"
 
+	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/store"
 )
 
-// Backend is the go-smtp backend shared by all SMTP sessions.
+// Backend is the go-smtp backend shared by all SMTP sessions. A nil limiter
+// or lockout (tests) disables the corresponding throttle.
 type Backend struct {
-	store  *store.Store
-	relay  *relay.Client
-	logger *slog.Logger
+	store   *store.Store
+	relay   *relay.Client
+	logger  *slog.Logger
+	limiter *ratelimit.Limiter
+	lockout *ratelimit.Lockout
 
 	mu       sync.Mutex
 	stopping bool
 	inFlight sync.WaitGroup
 }
 
-// NewBackend builds a Backend. relay may be nil in tests that never call
-// Data.
-func NewBackend(st *store.Store, rl *relay.Client, logger *slog.Logger) *Backend {
+// NewBackend builds a Backend.
+func NewBackend(st *store.Store, rl *relay.Client, limiter *ratelimit.Limiter, lockout *ratelimit.Lockout, logger *slog.Logger) *Backend {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Backend{store: st, relay: rl, logger: logger}
+	return &Backend{store: st, relay: rl, logger: logger, limiter: limiter, lockout: lockout}
 }
 
 // NewSession implements smtp.Backend.
