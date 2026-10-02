@@ -9,7 +9,7 @@ Relayward 是一个轻量发信网关：所有程序改连网关，网关独占�
 | 里程碑 | 状态 | 内容 |
 | ------ | ---- | ---- |
 | M1 可用的中继 | ✅ 已完成 | SMTP 认证、发件地址校验、转发上游、发送日志、首次启动管理员 token、/healthz |
-| M2 管理 API | 未开始 | 程序和 token 的增删改查、三种角色、审计日志、失败锁定、限流 |
+| M2 管理 API | ✅ 已完成 | 程序和 token 的增删改查、三种角色、审计日志、失败锁定、限流、IP 白名单 |
 | M3 退订 | 未开始 | 按收件人拆信、退订头注入、退订页面、拦截、退订 API |
 | M4 正文注入 | 未开始 | MIME 解析，在纯文本和 HTML 部分插入退订链接 |
 | M5 内嵌管理页 | 未开始 | embed 打包的管理页面，只调用管理 API |
@@ -42,14 +42,45 @@ export UPSTREAM_KEY=你的提供商发信key
 
 首次启动会生成超级管理员 token（前缀 `rw_admin_`）：明文只打印到启动日志一次，同时写入 `data/initial_admin_token`（权限 0600），数据库只存 SHA-256 哈希。请立即妥善保管。
 
-### 创建发信程序账号（M2 之前的临时方式）
+### 管理 API（M2）
+
+所有接口要求 `Authorization: Bearer <token>`，JSON 收发，错误统一为 `{"error":{"code":"...","message":"..."}}`。
+
+| 方法 | 路径 | 说明 | 最低角色 |
+| ---- | ---- | ---- | -------- |
+| GET | /api/stats | 各程序发送量、成功/失败/限流/拦截数 | viewer |
+| GET | /api/messages | 发送日志，支持 app/to/status/since/until 过滤，游标分页 | viewer |
+| GET | /api/apps | 程序列表 | viewer |
+| GET | /api/apps/{name} | 单个程序配置与统计 | viewer |
+| POST | /api/apps | 创建程序，响应含一次性 SMTP 密码 | operator |
+| PATCH | /api/apps/{name} | 启停、退订开关、限流、允许发件地址 | operator |
+| POST | /api/apps/{name}/rotate | 重置 SMTP 密码，旧密码立即失效 | operator |
+| DELETE | /api/apps/{name} | 删除程序（软删除，日志保留） | operator |
+| GET | /api/tokens | token 列表（不含明文与哈希） | admin |
+| POST | /api/tokens | 创建 token，明文只返回一次 | admin |
+| DELETE | /api/tokens/{id} | 吊销 token（吊销 initial 会删除令牌文件） | admin |
+| GET | /api/audit | 管理操作审计日志 | admin |
+
+示例：
 
 ```bash
-./bin/relayward admin create-app -config config.yaml gitea -from NoReply@example.com
-# 输出一次性 SMTP 密码；不传 -from 时默认只允许 NoReply@example.com
+TOKEN=$(cat data/initial_admin_token)
+# 创建程序
+curl -s -X POST http://127.0.0.1:8081/api/apps   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d '{"name":"gitea","allowed_from":["NoReply@example.com"],"rate_per_hour":500,"display_name":"Gitea"}'
+# 分页查询日志
+curl -s "http://127.0.0.1:8081/api/messages?app=gitea&status=failed&limit=50"   -H "Authorization: Bearer $TOKEN"
 ```
 
-M2 的管理 API 上线后，此 CLI 保留为本机应急手段，正式流程走 API。
+三种角色：admin（全部）、operator（程序与退订）、viewer（只读）。同一 IP 认证失败 10 次（10 分钟窗口）封禁 1 小时；`admin.ip_allowlist` 配置后仅允许指定 IP/CIDR 访问 /api。写操作全部落审计日志（含 token 名、IP、动作、对象）。
+
+### 本机 CLI
+
+```bash
+# 创建发信程序（临时方式，正式流程走 API；输出一次性 SMTP 密码）
+./bin/relayward admin create-app -config config.yaml gitea -from NoReply@example.com
+# 忘记所有管理员 token 时，本机重置（吊销全部并重新生成 initial token）
+./bin/relayward admin reset -config config.yaml
+```
 
 ### 把程序切到网关
 
@@ -102,6 +133,27 @@ make run    # 构建并启动
 | 单元/集成测试 | 全部通过（含 -race） | ✅ 覆盖率：api 93%、smtpd 88%、config 91%、store 75%、relay 63% |
 
 自动化覆盖：SMTP 认证（PLAIN/LOGIN）、发件人校验、多收件人逐条记录、上游 4xx/5xx/断连分别映射 451/554/451、日志落库、argon2id 加解密、token 生成与首次启动幂等、/healthz 各状态。
+
+## M2 验收自测结果
+
+验收标准：全程只用 API 完成「创建程序 → 发信 → 重置密码 → 旧密码失效」；viewer token 调写接口返回 403。
+
+| 场景 | 预期 | 实际 |
+| ---- | ---- | ---- |
+| API 创建 operator token | 201，明文只出现一次 | ✅ `{"token":"rw_...","token_info":{...}}` |
+| operator 经 API 创建程序 | 201，返回一次性 SMTP 密码 | ✅ 密码立即可用于 SMTP AUTH |
+| API 发出的密码发信 | 成功转发，日志 `sent` | ✅ |
+| rotate 后旧密码发信 | 535 拒绝 | ✅ |
+| rotate 后新密码发信 | 成功 | ✅ |
+| GET /api/stats | 各程序 sent/failed/rate_limited/suppressed 计数 | ✅ |
+| GET /api/messages 过滤 + 分页 | app/status 筛选、newest-first 游标 | ✅ |
+| operator 读 /api/audit | 403 | ✅ |
+| 缺 token / 无效 / 过期 | 同一 401 响应体 | ✅ |
+| 10 次认证失败后 | 该 IP 被封 429（`ip_banned`），有效 token 亦然 | ✅ |
+| viewer 调全部写接口 | 403 | ✅（71 个自动化测试含角色矩阵） |
+| SMTP 侧限流（每小时上限） | 超限 451 + 日志 `rate_limited` | ✅ 单元/集成测试覆盖 |
+
+自动化覆盖：api 包 83%（43 个测试 + 28 个子测试）、ratelimit 令牌桶/锁定窗口、smtpd 限流 451 与认证锁定、store 软删除/复活/审计事务/游标分页、admin reset。
 
 ## 安全说明
 
