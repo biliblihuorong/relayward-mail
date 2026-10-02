@@ -14,6 +14,10 @@
 
 ---
 
+[![Relayward 30 秒宣传片](docs/media/relayward-promo-zh.gif)](docs/media/relayward-promo-zh.mp4)
+
+<sub>点击动图观看完整 30 秒视频（含配乐）· [English video](docs/media/relayward-promo-en.mp4)</sub>
+
 ## 为什么需要 Relayward
 
 Gitea、Kanboard、Grafana、Wiki、CRM 等自托管工具都要发邮件，通常每个都被塞进一份真实的 SMTP/API key。结果是：key 到处都是，说不清哪个程序发了什么，某个程序狂发会拖垮提供商信誉，退订也没人管。
