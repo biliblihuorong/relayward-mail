@@ -223,6 +223,15 @@ func (s *Store) RotateAppPassword(ctx context.Context, name, passwordHash string
 	})
 }
 
+// GetAppByID returns an app by id, including soft-deleted ones: the
+// unsubscribe page must keep rendering for tokens issued before an app was
+// deleted.
+func (s *Store) GetAppByID(ctx context.Context, id int64) (*App, error) {
+	return scanApp(s.db.QueryRowContext(ctx,
+		`SELECT id, name, password_hash, enabled, unsubscribe, allowed_from, rate_per_hour, display_name, created_at, updated_at
+		 FROM apps WHERE id = ?`, id))
+}
+
 // GetAppByName returns the active app whose name equals the SMTP username.
 func (s *Store) GetAppByName(ctx context.Context, name string) (*App, error) {
 	return scanApp(s.db.QueryRowContext(ctx,
