@@ -207,6 +207,34 @@ func TestRevokeInitialTokenDeletesFile(t *testing.T) {
 	}
 }
 
+// TestRevokeCreatedTokenNamedInitialKeepsFile checks that a token created
+// through the API is never mistaken for the bootstrap token.
+func TestRevokeCreatedTokenNamedInitialKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	st, ts := startAPI(t, func(o *Options) { o.DataDir = dir })
+	admin := seedToken(t, st, "admin", store.RoleAdmin)
+
+	tokenFile := filepath.Join(dir, "initial_admin_token")
+	if err := os.WriteFile(tokenFile, []byte("rw_test_initial"), 0o600); err != nil {
+		t.Fatalf("write initial token file: %v", err)
+	}
+
+	status, body, _ := apiCall(t, ts, http.MethodPost, "/api/tokens", admin, map[string]any{"name": "initial", "role": "viewer"})
+	if status != http.StatusCreated {
+		t.Fatalf("create token: status = %d (body %v)", status, body)
+	}
+	info, _ := body["token_info"].(map[string]any)
+	id := int64(num(info, "id"))
+
+	status, body, _ = apiCall(t, ts, http.MethodDelete, fmt.Sprintf("/api/tokens/%d", id), admin, nil)
+	if status != http.StatusNoContent {
+		t.Fatalf("revoke: status = %d (body %v)", status, body)
+	}
+	if _, err := os.Stat(tokenFile); err != nil {
+		t.Errorf("initial_admin_token file must survive, stat err = %v", err)
+	}
+}
+
 // TestAuditRecordsManagementWrites checks that app.create and token.create
 // land in the audit log, newest first, attributed to the acting token.
 func TestAuditRecordsManagementWrites(t *testing.T) {
