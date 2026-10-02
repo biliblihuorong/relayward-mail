@@ -1,7 +1,7 @@
 """Render the 30-second Relayward promo video (en / zh) with Pillow + ffmpeg.
 
 Usage:  python promo/make_video.py [en|zh|all] [--preview]
-Output: promo/out/relayward-promo-<lang>.mp4  (1280x720, 30 fps)
+Output: promo/out/relayward-promo-<lang>.mp4  (1280x720, 30 fps, soft synthesized BGM)
 Requires: pip install pillow, ffmpeg on PATH, Windows fonts (Segoe UI / YaHei / Consolas).
 """
 import subprocess
@@ -196,7 +196,9 @@ def scene_gateway(c, t, T):
         start = (APP_X + APP_W, cy)
         if a > 0:
             end = lerp_pt(start, pin, a)
-            c.line(start, end, fade(BAD, a * (1 - p2) * 0.8), 2)
+            if p2 < 0.98:  # direct line to the provider fades into the gradient, then is gone
+                bgc = mix(BG1, BG2, (start[1] + end[1]) / 2 / H)
+                c.line(start, end, mix(bgc, BAD, a * (1 - p2) * 0.8), 2)
             if p2 > 0:
                 c.line(start, lerp_pt(start, gin, p2), fade(ACC, p2 * 0.9), 2)
         c.rect(APP_X, y + (1 - a) * 14, APP_W, APP_H, fill=fade(CARD, a), outline=fade(CARD_LINE, a), r=10)
@@ -374,6 +376,26 @@ def render_frame(lang, f):
     return img
 
 
+def make_bgm(path):
+    """Soft synthesized ambient pad (Am - F - C - G, 7.5 s each), low volume, no external assets."""
+    chords = [(220.00, 261.63, 329.63), (174.61, 220.00, 261.63),
+              (261.63, 329.63, 392.00), (196.00, 246.94, 293.66)]
+    inputs, labels = [], []
+    n = 0
+    for i, chord in enumerate(chords):
+        for f in chord:
+            inputs += ["-f", "lavfi", "-i", f"sine=f={f}:d=9:r=44100"]
+            ms = int(i * 7500)
+            labels.append(f"[{n}:a]afade=t=in:d=1.5,afade=t=out:st=7:d=2,adelay={ms}|{ms},volume=0.5[n{n}]")
+            n += 1
+    mix_in = "".join(f"[n{k}]" for k in range(n))
+    graph = (";".join(labels) + f";{mix_in}amix=inputs={n}:normalize=0,lowpass=f=900,"
+             "tremolo=f=0.25:d=0.35,aecho=0.8:0.6:700:0.3,volume=2.6,"
+             f"atrim=0:{DUR},afade=t=in:d=1.5,afade=t=out:st={DUR - 2.5}:d=2.5[out]")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs, "-filter_complex", graph,
+                    "-map", "[out]", "-ac", "2", "-ar", "44100", str(path)], check=True)
+
+
 def render(lang, preview=False):
     OUT.mkdir(parents=True, exist_ok=True)
     if preview:
@@ -381,9 +403,12 @@ def render(lang, preview=False):
             render_frame(lang, sec * FPS).save(OUT / f"preview-{lang}-{sec:02d}.png")
         return
     out = OUT / f"relayward-promo-{lang}.mp4"
+    bgm = OUT / "bgm.wav"
+    make_bgm(bgm)
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-           "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
-           "-preset", "medium", "-movflags", "+faststart", str(out)]
+           "-r", str(FPS), "-i", "-", "-i", str(bgm), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+           "-preset", "medium", "-c:a", "aac", "-b:a", "128k", "-t", str(DUR),
+           "-movflags", "+faststart", str(out)]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for f in range(FPS * DUR):
         p.stdin.write(render_frame(lang, f).tobytes())
