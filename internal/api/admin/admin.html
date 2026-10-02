@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relayward 管理台</title>
+<link rel="stylesheet" href="/admin/style.css">
+</head>
+<body>
+<header>
+  <h1>Relayward 管理台</h1>
+  <div class="token-box">
+    <input id="token" type="password" placeholder="粘贴管理 token（rw_admin_… / rw_…）" autocomplete="off">
+    <button id="save-token">保存并连接</button>
+    <span id="who" class="muted"></span>
+  </div>
+</header>
+
+<nav>
+  <button data-view="stats" class="active">统计</button>
+  <button data-view="messages">发送日志</button>
+  <button data-view="apps">程序</button>
+  <button data-view="unsubs">退订</button>
+  <button data-view="audit">审计</button>
+  <button id="health" class="right">健康检查</button>
+</nav>
+
+<main>
+  <section id="view-stats" class="view">
+    <h2>各程序发送量</h2>
+    <table id="stats-table"><thead><tr>
+      <th>程序</th><th>总数</th><th>成功</th><th>失败</th><th>限流</th><th>拦截</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="view-messages" class="view hidden">
+    <h2>发送日志</h2>
+    <form id="msg-filter">
+      <input name="app" placeholder="程序名">
+      <input name="to" placeholder="收件人">
+      <select name="status">
+        <option value="">全部状态</option>
+        <option value="sent">sent</option>
+        <option value="failed">failed</option>
+        <option value="rate_limited">rate_limited</option>
+        <option value="suppressed">suppressed</option>
+      </select>
+      <button>查询</button>
+      <button type="button" id="msg-next" class="muted">下一页</button>
+    </form>
+    <table id="messages-table"><thead><tr>
+      <th>时间</th><th>程序</th><th>收件人</th><th>主题</th><th>状态</th><th>大小</th><th>Message-ID</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="view-apps" class="view hidden">
+    <h2>程序</h2>
+    <form id="app-create">
+      <input name="name" placeholder="名称（SMTP 用户名）" required>
+      <input name="display_name" placeholder="显示名（退订页）">
+      <input name="allowed_from" placeholder="允许发件地址，逗号分隔" required>
+      <label><input type="checkbox" name="unsubscribe" checked> 退订</label>
+      <label><input type="checkbox" name="body_injection" checked> 正文注入</label>
+      <button>创建程序</button>
+    </form>
+    <div id="one-time" class="hidden"></div>
+    <table id="apps-table"><thead><tr>
+      <th>名称</th><th>显示名</th><th>状态</th><th>退订</th><th>正文注入</th><th>限流/h</th><th>操作</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="view-unsubs" class="view hidden">
+    <h2>退订</h2>
+    <form id="unsub-create">
+      <input name="app" placeholder="程序名" required>
+      <input name="email" placeholder="邮箱" required>
+      <button>手动添加退订</button>
+    </form>
+    <table id="unsubs-table"><thead><tr>
+      <th>程序</th><th>邮箱</th><th>来源</th><th>时间</th><th>操作</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="view-audit" class="view hidden">
+    <h2>审计日志</h2>
+    <button id="audit-next" class="muted">下一页</button>
+    <table id="audit-table"><thead><tr>
+      <th>时间</th><th>token</th><th>IP</th><th>动作</th><th>对象</th><th>详情</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+</main>
+
+<div id="toast" class="hidden"></div>
+<script src="/admin/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
+header { background: #fff; border-bottom: 1px solid #e3e5e8; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.token-box { display: flex; align-items: center; gap: 8px; }
+.token-box input { width: 340px; }
+input, select, button { font: inherit; padding: 6px 10px; border: 1px solid #c9ccd1; border-radius: 6px; background: #fff; }
+button { cursor: pointer; background: #f6f7f8; }
+button:hover { background: #ececee; }
+nav { background: #fff; border-bottom: 1px solid #e3e5e8; padding: 0 24px; display: flex; gap: 4px; }
+nav button { border: 0; border-radius: 0; background: none; padding: 12px 14px; border-bottom: 2px solid transparent; }
+nav button.active { border-bottom-color: #2b6cb0; color: #2b6cb0; font-weight: 600; }
+nav .right { margin-left: auto; }
+main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+form label { display: flex; gap: 4px; align-items: center; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e3e5e8; border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef0f2; font-size: 14px; }
+th { background: #fafbfc; color: #555; font-weight: 600; }
+td button { padding: 3px 8px; font-size: 13px; }
+.muted { color: #888; font-size: 13px; }
+.hidden { display: none; }
+#one-time { background: #fff8e1; border: 1px solid #f0d896; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 14px; word-break: break-all; }
+#toast { position: fixed; right: 20px; bottom: 20px; background: #1a1a1a; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; }
+#toast.error { background: #b02a2a; }
+code { background: #eef0f2; border-radius: 4px; padding: 1px 5px; font-size: 13px; }

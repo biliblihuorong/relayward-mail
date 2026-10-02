@@ -68,6 +68,9 @@ func New(opts Options) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /admin", s.handleAdmin)
+	mux.HandleFunc("GET /admin/app.js", s.handleAdmin)
+	mux.HandleFunc("GET /admin/style.css", s.handleAdmin)
 
 	mux.HandleFunc("GET /api/stats", s.requireRole(store.RoleViewer, s.handleStats))
 	mux.HandleFunc("GET /api/messages", s.requireRole(store.RoleViewer, s.handleMessages))
