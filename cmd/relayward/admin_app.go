@@ -20,6 +20,8 @@ func admin(args []string) error {
 	switch args[0] {
 	case "create-app":
 		return adminCreateApp(args[1:])
+	case "reset":
+		return adminReset(args[1:])
 	default:
 		return fmt.Errorf("unknown admin command %q", args[0])
 	}
@@ -82,7 +84,14 @@ func adminCreateApp(args []string) error {
 		AllowedFrom:  froms,
 		RatePerHour:  500,
 	}
-	if err := st.CreateApp(context.Background(), app); err != nil {
+	audit := &store.AuditEntry{
+		TokenName: "local-cli",
+		IP:        "local",
+		Action:    store.ActionAppCreate,
+		Target:    name,
+		Detail:    fmt.Sprintf("created via CLI with senders %v", froms),
+	}
+	if err := st.CreateApp(context.Background(), app, audit); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return fmt.Errorf("app %q already exists", name)
 		}

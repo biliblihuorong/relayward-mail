@@ -22,6 +22,7 @@ import (
 
 	"relayward-mail/internal/api"
 	"relayward-mail/internal/config"
+	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/smtpd"
 	"relayward-mail/internal/store"
@@ -75,7 +76,13 @@ func serve(args []string) error {
 	})
 	monitor := api.NewUpstreamMonitor(upstream, time.Minute, logger)
 
-	backend := smtpd.NewBackend(st, upstream, logger)
+	limiter := ratelimit.NewLimiter()
+	lockout := ratelimit.NewLockout(
+		ratelimit.DefaultFailureLimit,
+		ratelimit.DefaultFailureWindow,
+		ratelimit.DefaultBanDuration)
+
+	backend := smtpd.NewBackend(st, upstream, limiter, lockout, logger)
 	smtpServer, err := newSMTPServer(cfg, backend)
 	if err != nil {
 		return err
@@ -87,8 +94,18 @@ func serve(args []string) error {
 
 	startedAt := time.Now()
 	apiServer := &http.Server{
-		Addr:              cfg.Admin.Listen,
-		Handler:           api.New(st, monitor, version, startedAt, logger).Handler(),
+		Addr: cfg.Admin.Listen,
+		Handler: api.New(api.Options{
+			Store:       st,
+			Monitor:     monitor,
+			Limiter:     limiter,
+			Lockout:     lockout,
+			DataDir:     cfg.DataDir,
+			Version:     version,
+			StartedAt:   startedAt,
+			Logger:      logger,
+			IPAllowlist: cfg.Admin.IPAllowlist,
+		}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

@@ -37,7 +37,13 @@ func ensureInitialAdminToken(ctx context.Context, st *store.Store, dataDir strin
 		Role:      store.RoleAdmin,
 		TokenHash: store.HashToken(raw),
 	}
-	if err := st.CreateAdminToken(ctx, tok); err != nil {
+	audit := &store.AuditEntry{
+		TokenName: "system",
+		IP:        "local",
+		Action:    store.ActionTokenCreate,
+		Target:    "initial",
+	}
+	if err := st.CreateAdminToken(ctx, tok, audit); err != nil {
 		return err
 	}
 
