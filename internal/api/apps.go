@@ -15,36 +15,39 @@ const defaultRatePerHour = 500
 
 // appJSON is the wire form of an app; the password hash is never exposed.
 type appJSON struct {
-	Name        string    `json:"name"`
-	DisplayName string    `json:"display_name"`
-	Enabled     bool      `json:"enabled"`
-	Unsubscribe bool      `json:"unsubscribe"`
-	AllowedFrom []string  `json:"allowed_from"`
-	RatePerHour int       `json:"rate_per_hour"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Name          string    `json:"name"`
+	DisplayName   string    `json:"display_name"`
+	Enabled       bool      `json:"enabled"`
+	Unsubscribe   bool      `json:"unsubscribe"`
+	BodyInjection bool      `json:"body_injection"`
+	AllowedFrom   []string  `json:"allowed_from"`
+	RatePerHour   int       `json:"rate_per_hour"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func toAppJSON(a *store.App) appJSON {
 	return appJSON{
-		Name:        a.Name,
-		DisplayName: a.DisplayName,
-		Enabled:     a.Enabled,
-		Unsubscribe: a.Unsubscribe,
-		AllowedFrom: a.AllowedFrom,
-		RatePerHour: a.RatePerHour,
-		CreatedAt:   a.CreatedAt,
-		UpdatedAt:   a.UpdatedAt,
+		Name:          a.Name,
+		DisplayName:   a.DisplayName,
+		Enabled:       a.Enabled,
+		Unsubscribe:   a.Unsubscribe,
+		BodyInjection: a.BodyInjection,
+		AllowedFrom:   a.AllowedFrom,
+		RatePerHour:   a.RatePerHour,
+		CreatedAt:     a.CreatedAt,
+		UpdatedAt:     a.UpdatedAt,
 	}
 }
 
 // createAppRequest is the POST /api/apps body.
 type createAppRequest struct {
-	Name        string   `json:"name"`
-	AllowedFrom []string `json:"allowed_from"`
-	RatePerHour *int     `json:"rate_per_hour"`
-	DisplayName string   `json:"display_name"`
-	Unsubscribe *bool    `json:"unsubscribe"`
+	Name          string   `json:"name"`
+	AllowedFrom   []string `json:"allowed_from"`
+	RatePerHour   *int     `json:"rate_per_hour"`
+	DisplayName   string   `json:"display_name"`
+	Unsubscribe   *bool    `json:"unsubscribe"`
+	BodyInjection *bool    `json:"body_injection"`
 }
 
 // handleListApps serves GET /api/apps.
@@ -100,6 +103,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if req.Unsubscribe != nil {
 		unsubscribe = *req.Unsubscribe
 	}
+	bodyInjection := true
+	if req.BodyInjection != nil {
+		bodyInjection = *req.BodyInjection
+	}
 
 	password, err := store.RandomPassword()
 	if err != nil {
@@ -113,13 +120,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	app := &store.App{
-		Name:         req.Name,
-		PasswordHash: hash,
-		Enabled:      true,
-		Unsubscribe:  unsubscribe,
-		AllowedFrom:  req.AllowedFrom,
-		RatePerHour:  rate,
-		DisplayName:  req.DisplayName,
+		Name:          req.Name,
+		PasswordHash:  hash,
+		Enabled:       true,
+		Unsubscribe:   unsubscribe,
+		BodyInjection: bodyInjection,
+		AllowedFrom:   req.AllowedFrom,
+		RatePerHour:   rate,
+		DisplayName:   req.DisplayName,
 	}
 	if err := s.store.CreateApp(r.Context(), app, s.auditEntry(r, store.ActionAppCreate, req.Name, "")); err != nil {
 		s.writeAppError(w, err)
@@ -138,11 +146,12 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 // appPatchRequest is the PATCH /api/apps/{name} body; nil fields stay
 // unchanged.
 type appPatchRequest struct {
-	Enabled     *bool    `json:"enabled"`
-	Unsubscribe *bool    `json:"unsubscribe"`
-	RatePerHour *int     `json:"rate_per_hour"`
-	AllowedFrom []string `json:"allowed_from"`
-	DisplayName *string  `json:"display_name"`
+	Enabled       *bool    `json:"enabled"`
+	Unsubscribe   *bool    `json:"unsubscribe"`
+	BodyInjection *bool    `json:"body_injection"`
+	RatePerHour   *int     `json:"rate_per_hour"`
+	AllowedFrom   []string `json:"allowed_from"`
+	DisplayName   *string  `json:"display_name"`
 }
 
 // handlePatchApp serves PATCH /api/apps/{name}.
@@ -159,11 +168,12 @@ func (s *Server) handlePatchApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upd := store.AppUpdate{
-		Enabled:     req.Enabled,
-		Unsubscribe: req.Unsubscribe,
-		RatePerHour: req.RatePerHour,
-		AllowedFrom: req.AllowedFrom,
-		DisplayName: req.DisplayName,
+		Enabled:       req.Enabled,
+		Unsubscribe:   req.Unsubscribe,
+		BodyInjection: req.BodyInjection,
+		RatePerHour:   req.RatePerHour,
+		AllowedFrom:   req.AllowedFrom,
+		DisplayName:   req.DisplayName,
 	}
 	app, err := s.store.UpdateApp(r.Context(), name, upd, s.auditEntry(r, store.ActionAppUpdate, name, ""))
 	if err != nil {
