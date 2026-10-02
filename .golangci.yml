@@ -20,6 +20,7 @@ linters:
         - (io.Closer).Close
         - (net.Conn).Close
         - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
         - (*database/sql.Tx).Rollback
         - (*relayward-mail/internal/store.Store).Close
         - (*github.com/emersion/go-smtp.Server).Close
