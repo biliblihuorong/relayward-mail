@@ -42,23 +42,23 @@ type Upstream struct {
 	TLS      string `yaml:"tls"`
 }
 
-// Public configures the HTTP listener that serves recipients (unsubscribe
-// pages from M3 on, /healthz from M2 on).
+// Public configures the HTTP listener that serves recipients: the
+// unsubscribe pages and /healthz.
 type Public struct {
 	Listen  string `yaml:"listen"`
 	BaseURL string `yaml:"base_url"`
 }
 
 // Admin configures the HTTP listener that serves the management API.
-// IPAllowlist is parsed here but only enforced from M2 on.
+// IPAllowlist restricts /api/* to the listed addresses or CIDR ranges; empty
+// means no restriction.
 type Admin struct {
 	Listen      string   `yaml:"listen"`
 	IPAllowlist []string `yaml:"ip_allowlist"`
 }
 
-// Unsubscribe holds the unsubscribe token secret and footer wording. The
-// token machinery itself ships in M3; the fields are parsed so that the
-// example configuration validates already.
+// Unsubscribe holds the unsubscribe token secret and the footer wording used
+// for body injection ({app} is replaced by the app's display name).
 type Unsubscribe struct {
 	Secret     string `yaml:"secret"`
 	FooterText string `yaml:"footer_text"`

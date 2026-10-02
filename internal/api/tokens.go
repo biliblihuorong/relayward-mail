@@ -136,7 +136,9 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	if tok.Name == "initial" && s.dataDir != "" {
+	// Only the bootstrap token has no creator; API-created tokens that happen
+	// to be named "initial" must not delete the file.
+	if tok.Name == "initial" && tok.CreatedBy == nil && s.dataDir != "" {
 		if err := os.Remove(filepath.Join(s.dataDir, initialAdminTokenFile)); err != nil && !os.IsNotExist(err) {
 			s.logger.Warn("remove initial token file", slog.String("err", err.Error()))
 		}
