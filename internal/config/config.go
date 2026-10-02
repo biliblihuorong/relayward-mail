@@ -120,6 +120,9 @@ func (c *Config) applyDefaults() {
 	if c.Admin.Listen == "" {
 		c.Admin.Listen = ":8081"
 	}
+	if c.Unsubscribe.FooterText == "" {
+		c.Unsubscribe.FooterText = "不想再收到此类邮件？点此退订"
+	}
 	if c.LogRetentionDays == 0 {
 		c.LogRetentionDays = 90
 	}
