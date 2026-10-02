@@ -34,3 +34,6 @@ go.work.sum
 # relayward build output and runtime data
 /bin/
 data/
+
+# IDE
+.idea/
