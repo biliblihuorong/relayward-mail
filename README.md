@@ -14,6 +14,10 @@ Single static Go binary · one SQLite file · zero runtime dependencies
 
 ---
 
+[![Relayward 30-second promo](docs/media/relayward-promo-en.gif)](docs/media/relayward-promo-en.mp4)
+
+<sub>Click the animation for the full 30 s video (with music) · [中文版视频](docs/media/relayward-promo-zh.mp4)</sub>
+
 ## Why Relayward
 
 Self-hosted tools (Gitea, Kanboard, Grafana, wikis, CRMs…) all need to send mail, and each one is usually handed your real SMTP/API key. Keys end up scattered, nobody can tell which app sent what, one noisy app can burn your provider reputation, and unsubscribe handling is missing entirely.
