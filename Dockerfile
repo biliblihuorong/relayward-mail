@@ -8,10 +8,13 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/relayward ./cmd/relayward
+RUN mkdir /out/data
 
 # Run stage: distroless, non-root, no shell.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/relayward /relayward
+# Pre-create /data owned by nonroot so a fresh named volume is writable.
+COPY --from=build --chown=65532:65532 /out/data /data
 USER nonroot:nonroot
 EXPOSE 587 8080 8081
 VOLUME ["/data"]
