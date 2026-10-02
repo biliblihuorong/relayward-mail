@@ -14,10 +14,11 @@ import (
 
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/store"
+	"relayward-mail/internal/unsub"
 )
 
-// authTimeout bounds one authentication attempt (store lookup + argon2id).
-const authTimeout = 10 * time.Second
+// dbTimeout bounds a single store operation on the relay path.
+const dbTimeout = 10 * time.Second
 
 // Error responses shared by all sessions. They are *smtp.SMTPError so that
 // go-smtp uses the exact status codes required by the plan.
@@ -72,7 +73,7 @@ func (s *session) authenticate(username, password string) error {
 		return errAuthFailed
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), authTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
 	app, err := s.backend.store.GetAppByName(ctx, username)
@@ -158,7 +159,8 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 }
 
 // Data implements smtp.Session: forward the message to the upstream provider
-// and log one row per recipient.
+// and log one row per recipient. Apps with the unsubscribe switch on are
+// split per recipient, so every copy carries its own List-Unsubscribe link.
 func (s *session) Data(r io.Reader) error {
 	if s.app == nil {
 		return errMustAuth
@@ -181,11 +183,12 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	meta := parseMessageMeta(data)
+	size := int64(len(data))
 
 	// Per-app hourly limit: reject the whole transaction with 451 so the
 	// client program retries later, and log rate_limited rows.
 	if s.backend.limiter != nil && !s.backend.limiter.Allow(s.app.ID, s.app.RatePerHour) {
-		s.logAndStore(store.StatusRateLimited, "", meta, int64(len(data)), time.Since(start))
+		s.logAndStore(store.StatusRateLimited, "", meta, size, time.Since(start))
 		s.backend.logger.Warn("rate limited",
 			slog.String("app", s.app.Name),
 			slog.Int("rate_per_hour", s.app.RatePerHour),
@@ -193,33 +196,113 @@ func (s *session) Data(r io.Reader) error {
 		return errRateLimited
 	}
 
-	relayErr := s.backend.relay.Send(context.Background(), s.mailFrom, s.rcpts, data)
-
-	status := store.StatusSent
-	resp := ""
-	if relayErr != nil {
-		status = store.StatusFailed
-		resp = relayErr.Error()
-	}
-	s.logAndStore(status, resp, meta, int64(len(data)), time.Since(start))
-
-	if relayErr != nil {
-		if re := (*relay.Error)(nil); errors.As(relayErr, &re) && !re.Temporary {
-			return errPermRelay
+	if s.app.Unsubscribe {
+		if s.backend.unsub == nil || s.backend.baseURL == "" {
+			s.backend.logger.Error("unsubscribe enabled but gateway misconfigured",
+				slog.String("app", s.app.Name))
+			return errTempRelay
 		}
-		return errTempRelay
+		return s.relaySplit(data, meta, size, start)
 	}
-	return nil
+	return s.relayAsIs(data, meta, size, start)
 }
 
-// logAndStore records the outcome: one messages row per recipient plus a
-// structured log line.
+// relayAsIs forwards one copy to all recipients untouched (apps with the
+// unsubscribe switch off).
+func (s *session) relayAsIs(data []byte, meta messageMeta, size int64, start time.Time) error {
+	relayErr := s.backend.relay.Send(context.Background(), s.mailFrom, s.rcpts, data)
+
+	status, resp := store.StatusSent, ""
+	if relayErr != nil {
+		status, resp = store.StatusFailed, relayErr.Error()
+	}
+	s.logAndStore(status, resp, meta, size, time.Since(start))
+	return relayOutcome(relayErr)
+}
+
+// relaySplit forwards one copy per recipient: recipients with an unsubscribe
+// record are suppressed (logged as such, still a 250 to the client so it does
+// not retry), the others each receive their own copy with their own
+// unsubscribe link. Any upstream failure maps like the single-copy path so
+// the client retries; already delivered copies may then arrive twice, which
+// the first version accepts (see DECISIONS.md).
+func (s *session) relaySplit(data []byte, meta messageMeta, size int64, start time.Time) error {
+	stripped := unsub.RemoveBcc(data)
+
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+
+	var firstErr error
+	for _, rcpt := range s.rcpts {
+		normalized := store.NormalizeEmail(rcpt)
+
+		suppressed, err := s.backend.store.IsUnsubscribed(ctx, s.app.ID, normalized)
+		if err != nil {
+			s.backend.logger.Error("unsubscribe lookup",
+				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
+			return errTempRelay
+		}
+		if suppressed {
+			s.backend.logger.Info("recipient suppressed",
+				slog.String("app", s.app.Name), slog.String("rcpt", normalized))
+			s.logOne(store.StatusSuppressed, "", meta, size, rcpt, time.Since(start))
+			continue
+		}
+
+		token, err := s.backend.unsub.Token(s.app.ID, normalized)
+		if err != nil {
+			s.backend.logger.Error("build unsubscribe token",
+				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
+			return errTempRelay
+		}
+		msgData, err := unsub.AddUnsubscribeHeaders(stripped, s.backend.baseURL+"/u/"+token)
+		if err != nil {
+			s.backend.logger.Error("inject unsubscribe headers",
+				slog.String("app", s.app.Name), slog.String("rcpt", normalized), slog.String("err", err.Error()))
+			return errTempRelay
+		}
+
+		sendErr := s.backend.relay.Send(context.Background(), s.mailFrom, []string{rcpt}, msgData)
+		if sendErr != nil {
+			s.logOne(store.StatusFailed, sendErr.Error(), meta, size, rcpt, time.Since(start))
+			if firstErr == nil {
+				firstErr = sendErr
+			}
+			continue
+		}
+		s.logOne(store.StatusSent, "", meta, size, rcpt, time.Since(start))
+	}
+	return relayOutcome(firstErr)
+}
+
+// relayOutcome maps an upstream relay error to the SMTP reply: permanent
+// upstream failures answer 554, everything else 451 so the client retries.
+func relayOutcome(relayErr error) error {
+	if relayErr == nil {
+		return nil
+	}
+	if re := (*relay.Error)(nil); errors.As(relayErr, &re) && !re.Temporary {
+		return errPermRelay
+	}
+	return errTempRelay
+}
+
+// logAndStore records the outcome for every recipient of the transaction.
 func (s *session) logAndStore(status, resp string, meta messageMeta, size int64, duration time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), authTimeout)
+	for _, rcpt := range s.rcpts {
+		s.logOne(status, resp, meta, size, rcpt, duration)
+	}
+}
+
+// logOne records one recipient outcome: a messages row plus a structured
+// log line.
+func (s *session) logOne(status, resp string, meta messageMeta, size int64, rcpt string, duration time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
 	logger := s.backend.logger.With(
 		slog.String("app", s.app.Name),
+		slog.String("rcpt", rcpt),
 		slog.String("status", status),
 		slog.Int64("size", size),
 		slog.String("msg_id", meta.MessageID),
@@ -227,24 +310,21 @@ func (s *session) logAndStore(status, resp string, meta messageMeta, size int64,
 		slog.Int64("duration_ms", duration.Milliseconds()),
 	)
 
-	for _, rcpt := range s.rcpts {
-		msg := &store.Message{
-			AppID:        s.app.ID,
-			MailFrom:     s.mailFrom,
-			RcptTo:       rcpt,
-			Subject:      meta.Subject,
-			Size:         size,
-			MessageID:    meta.MessageID,
-			Status:       status,
-			UpstreamResp: resp,
-			ClientIP:     s.remoteIP,
-		}
-		if err := s.backend.store.InsertMessage(ctx, msg); err != nil {
-			logger.Error("store message log", slog.String("rcpt", rcpt), slog.String("err", err.Error()))
-		}
+	msg := &store.Message{
+		AppID:        s.app.ID,
+		MailFrom:     s.mailFrom,
+		RcptTo:       rcpt,
+		Subject:      meta.Subject,
+		Size:         size,
+		MessageID:    meta.MessageID,
+		Status:       status,
+		UpstreamResp: resp,
+		ClientIP:     s.remoteIP,
 	}
-
-	logger.Info("message relayed", slog.Int("rcpt_count", len(s.rcpts)))
+	if err := s.backend.store.InsertMessage(ctx, msg); err != nil {
+		logger.Error("store message log", slog.String("err", err.Error()))
+	}
+	logger.Info("message processed")
 }
 
 // Reset implements smtp.Session: discard the current transaction but keep

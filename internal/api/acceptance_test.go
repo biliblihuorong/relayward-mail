@@ -14,13 +14,20 @@ import (
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/smtpd"
 	"relayward-mail/internal/store"
+	"relayward-mail/internal/unsub"
 )
 
 // startGatewaySMTP boots the ingress SMTP server backed by the same store as
-// the management API, relaying into the given upstream client.
+// the management API, relaying into the given upstream client. A real
+// unsubscribe manager is wired in, because apps created through the API
+// default to the unsubscribe switch on and must relay through the split path.
 func startGatewaySMTP(t *testing.T, st *store.Store, rl *relay.Client) string {
 	t.Helper()
-	be := smtpd.NewBackend(st, rl, nil, nil, nil) // no limiter/lockout here
+	mgr, err := unsub.NewManager([]byte("acceptance-test-secret"))
+	if err != nil {
+		t.Fatalf("unsubscribe manager: %v", err)
+	}
+	be := smtpd.NewBackend(st, rl, nil, nil, nil, mgr, "https://relayward.test") // no limiter/lockout here
 	srv := smtp.NewServer(be)
 	srv.Domain = "mail.example.com"
 	srv.AllowInsecureAuth = true
@@ -179,6 +186,8 @@ func TestViewerCannotWrite(t *testing.T) {
 		{"delete app", http.MethodDelete, "/api/apps/x", nil},
 		{"create token", http.MethodPost, "/api/tokens", map[string]any{"name": "x", "role": "viewer"}},
 		{"revoke token", http.MethodDelete, "/api/tokens/1", nil},
+		{"create unsubscribe", http.MethodPost, "/api/unsubscribes", map[string]any{"app": "x", "email": "a@example.com"}},
+		{"delete unsubscribe", http.MethodDelete, "/api/unsubscribes/1", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

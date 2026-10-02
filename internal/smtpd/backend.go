@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/emersion/go-smtp"
@@ -15,28 +16,43 @@ import (
 	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/store"
+	"relayward-mail/internal/unsub"
 )
 
 // Backend is the go-smtp backend shared by all SMTP sessions. A nil limiter
-// or lockout (tests) disables the corresponding throttle.
+// or lockout (tests) disables the corresponding throttle. unsub and baseURL
+// power the per-recipient split: with unsubscribe enabled apps, a nil manager
+// is a misconfiguration and message transfer fails with a temporary error.
 type Backend struct {
 	store   *store.Store
 	relay   *relay.Client
 	logger  *slog.Logger
 	limiter *ratelimit.Limiter
 	lockout *ratelimit.Lockout
+	unsub   *unsub.Manager
+	baseURL string
 
 	mu       sync.Mutex
 	stopping bool
 	inFlight sync.WaitGroup
 }
 
-// NewBackend builds a Backend.
-func NewBackend(st *store.Store, rl *relay.Client, limiter *ratelimit.Limiter, lockout *ratelimit.Lockout, logger *slog.Logger) *Backend {
+// NewBackend builds a Backend. unsubMgr may be nil only when no app uses the
+// unsubscribe feature; publicBaseURL is the scheme+host the unsubscribe links
+// point at (from public.base_url).
+func NewBackend(st *store.Store, rl *relay.Client, limiter *ratelimit.Limiter, lockout *ratelimit.Lockout, logger *slog.Logger, unsubMgr *unsub.Manager, publicBaseURL string) *Backend {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Backend{store: st, relay: rl, logger: logger, limiter: limiter, lockout: lockout}
+	return &Backend{
+		store:   st,
+		relay:   rl,
+		logger:  logger,
+		limiter: limiter,
+		lockout: lockout,
+		unsub:   unsubMgr,
+		baseURL: strings.TrimSuffix(publicBaseURL, "/"),
+	}
 }
 
 // NewSession implements smtp.Backend.

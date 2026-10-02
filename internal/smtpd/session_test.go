@@ -104,7 +104,7 @@ func smtpErrorCode(t *testing.T, err error) int {
 }
 
 func TestBeginTransferWhileStopping(t *testing.T) {
-	be := NewBackend(nil, nil, nil, nil, nil)
+	be := NewBackend(nil, nil, nil, nil, nil, nil, "")
 	if err := be.beginTransfer(); err != nil {
 		t.Fatalf("beginTransfer before stop: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestAuthenticate(t *testing.T) {
 	seedApp(t, st, "gitea", true)
 	seedApp(t, st, "offapp", false)
 
-	be := NewBackend(st, nil, nil, nil, nil)
+	be := NewBackend(st, nil, nil, nil, nil, nil, "")
 
 	tests := []struct {
 		name     string
@@ -161,7 +161,7 @@ func TestAuthenticate(t *testing.T) {
 
 func TestSessionGuards(t *testing.T) {
 	st := openStore(t)
-	be := NewBackend(st, nil, nil, nil, nil)
+	be := NewBackend(st, nil, nil, nil, nil, nil, "")
 	s := &session{backend: be}
 
 	if err := s.Mail("noreply@example.com", nil); smtpErrorCode(t, err) != 530 {

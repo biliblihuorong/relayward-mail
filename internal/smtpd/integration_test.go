@@ -27,7 +27,9 @@ func openStore(t *testing.T) *store.Store {
 	return st
 }
 
-// seedApp inserts an app with password "pw-<name>".
+// seedApp inserts an app with password "pw-<name>". The unsubscribe switch
+// is off, so these tests exercise the plain as-is relay path; the split path
+// has its own tests with explicitly enabled apps.
 func seedApp(t *testing.T, st *store.Store, name string, enabled bool) *store.App {
 	t.Helper()
 	hash, err := store.HashPassword("pw-" + name)
@@ -38,7 +40,7 @@ func seedApp(t *testing.T, st *store.Store, name string, enabled bool) *store.Ap
 		Name:         name,
 		PasswordHash: hash,
 		Enabled:      enabled,
-		Unsubscribe:  true,
+		Unsubscribe:  false,
 		AllowedFrom:  []string{"NoReply@example.com"},
 		RatePerHour:  500,
 	}
@@ -181,7 +183,7 @@ func newGateway(t *testing.T) (*store.Store, *fakeUpstream, string) {
 	up := &fakeUpstream{}
 	addr := startFakeSMTPUpstream(t, up)
 	cl := newTestRelay(t, addr)
-	be := NewBackend(st, cl, nil, nil, nil)
+	be := NewBackend(st, cl, nil, nil, nil, nil, "")
 	return st, up, startSMTP(t, be)
 }
 
@@ -339,7 +341,7 @@ func TestEndToEndUpstreamUnreachable(t *testing.T) {
 	st := openStore(t)
 	seedApp(t, st, "gitea", true)
 
-	be := NewBackend(st, relay.New(relay.Options{Host: "127.0.0.1", Port: 1, Username: "u", Password: "p", TLSMode: relay.TLSNone, HelloDomain: "relayward.test", Timeout: 5 * time.Second}), nil, nil, nil)
+	be := NewBackend(st, relay.New(relay.Options{Host: "127.0.0.1", Port: 1, Username: "u", Password: "p", TLSMode: relay.TLSNone, HelloDomain: "relayward.test", Timeout: 5 * time.Second}), nil, nil, nil, nil, "")
 	addr := startSMTP(t, be)
 
 	cl := dialSMTP(t, addr)
@@ -356,7 +358,7 @@ func TestEndToEndUpstreamPermReject(t *testing.T) {
 	st := openStore(t)
 	seedApp(t, st, "gitea", true)
 
-	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, rejectingUpstream{})), nil, nil, nil)
+	be := NewBackend(st, newTestRelay(t, startFakeSMTPUpstream(t, rejectingUpstream{})), nil, nil, nil, nil, "")
 	addr := startSMTP(t, be)
 
 	cl := dialSMTP(t, addr)
