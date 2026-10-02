@@ -37,3 +37,6 @@ data/
 
 # IDE
 .idea/
+
+# promo render scratch (final videos live in docs/media)
+/promo/out/

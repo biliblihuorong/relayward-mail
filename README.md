@@ -1,281 +1,196 @@
-# relayward-mail
+<div align="center">
 
-Relayward 是一个轻量发信网关：所有程序改连网关，网关独占提供商的真实 key，并在转发时按程序记录、限流、注入退订。单个 Go 二进制 + 一个 SQLite 文件，部署零依赖。
+**English** | [简体中文](README.zh-CN.md)
 
-按[计划书](docs/Relayward%20邮件网关计划书.md)分五个里程碑开发，当前进度：**M5 已完成（全部里程碑交付）**。
+# Relayward
 
-## 当前进度
+**A self-hosted mail relay gateway. Point every app at the gateway, keep the real provider key in one place.**
 
-| 里程碑 | 状态 | 内容 |
-| ------ | ---- | ---- |
-| M1 可用的中继 | ✅ 已完成 | SMTP 认证、发件地址校验、转发上游、发送日志、首次启动管理员 token、/healthz |
-| M2 管理 API | ✅ 已完成 | 程序和 token 的增删改查、三种角色、审计日志、失败锁定、限流、IP 白名单 |
-| M3 退订 | ✅ 已完成 | 按收件人拆信、退订头注入、退订页面、拦截、退订 API |
-| M4 正文注入 | ✅ 已完成 | MIME 解析，在纯文本和 HTML 部分插入退订链接 |
-| M5 内嵌管理页 | ✅ 已完成 | embed 打包的管理页面，只调用管理 API |
+Single static Go binary · one SQLite file · zero runtime dependencies
 
-## 快速开始
+[30 s promo (EN)](docs/media/relayward-promo-en.mp4) · [30 s promo (中文)](docs/media/relayward-promo-zh.mp4) · [Deployment guide](docs/DEPLOYMENT.md) · [部署指南](docs/DEPLOYMENT.zh-CN.md)
 
-### 构建
+</div>
 
-```bash
-make build    # 产物在 bin/relayward（Windows 自动加 .exe）
+---
+
+## Why Relayward
+
+Self-hosted tools (Gitea, Kanboard, Grafana, wikis, CRMs…) all need to send mail, and each one is usually handed your real SMTP/API key. Keys end up scattered, nobody can tell which app sent what, one noisy app can burn your provider reputation, and unsubscribe handling is missing entirely.
+
+Relayward sits in the middle:
+
+```
+ Gitea ─┐
+ Kanboard ─┤  per-app SMTP     ┌────────────┐   real provider key   ┌───────────────┐
+ Grafana ─┼─ credentials ───▶ │ Relayward  │ ───────────────────▶ │ Mail provider │
+ Wiki ─┤   (port 587)         │  gateway   │   (only stored here)  └───────────────┘
+ CRM ─┘                       └─────┬──────┘
+                                    │ log · rate-limit · unsubscribe
+                              SQLite + admin API/UI (:8081)
+                              unsubscribe pages     (:8080)
 ```
 
-要求 Go 1.23+，`CGO_ENABLED=0`，静态二进制无外部依赖。
+- **One real key.** Apps authenticate with their own SMTP password; the provider key lives only in the gateway. Rotate it once, in one place.
+- **Per-app control.** Allowed sender addresses, hourly rate limit, enable/disable, password reset — all per app.
+- **Full send log.** Every message (and every recipient) is recorded: sent, failed, rate-limited, suppressed.
+- **Unsubscribe built in.** RFC 8058 one-click `List-Unsubscribe` headers, a body footer link, a confirmation page, per-app/per-recipient suppression.
+- **Admin API and embedded web UI**, three roles (admin / operator / viewer), audit log, IP allow-list, failure lockout.
 
-### 配置
+## Features
+
+| Area | What you get |
+| ---- | ------------ |
+| Relay | SMTP ingress (AUTH PLAIN/LOGIN, STARTTLS), sender-address validation, forwarding to the upstream provider, per-recipient result mapping (upstream 4xx → 451, 5xx → 554) |
+| Safety | Token-bucket rate limit per app, per-IP failure lockout (10 failures / 10 min → 1 h ban), argon2id password hashing, SHA-256 hashed admin tokens, panic recovery on every listener |
+| Unsubscribe | Per-recipient message split, `List-Unsubscribe` + `List-Unsubscribe-Post`, stateless AES-256-GCM tokens (no e-mail or app name in the link), GET confirm page (safe against mail scanners), POST one-click, re-subscribe |
+| Body injection | MIME-aware footer for `text/plain` and `text/html`; skips signed/encrypted parts, attachments, non-UTF-8 parts, and DKIM-signed mail (headers are still injected) |
+| Admin | REST API, embedded admin page (`/admin`), audit log, `relayward admin reset` for lost tokens |
+| Ops | `/healthz` (cached upstream probe), Docker `HEALTHCHECK`, structured logs, graceful shutdown, log retention (`log_retention_days`, default 90) |
+
+## Quick start
+
+Requires the Go version declared in `go.mod`.
 
 ```bash
+# 1. Build (static binary, CGO disabled) -> bin/relayward
+make build
+
+# 2. Configure
 cp config.example.yaml config.yaml
-# 编辑 config.yaml，并设置环境变量：
-export UPSTREAM_KEY=你的提供商发信key
-```
+$EDITOR config.yaml                 # upstream host/user, public.base_url (must be https)
+export UPSTREAM_KEY=your-provider-smtp-key
 
-配置项说明见 `config.example.yaml` 内注释。所有 `${VAR}` 引用从环境变量展开。
-
-### 启动
-
-```bash
+# 3. Run
 ./bin/relayward serve -config config.yaml
 ```
 
-首次启动会生成超级管理员 token（前缀 `rw_admin_`）：明文只打印到启动日志一次，同时写入 `data/initial_admin_token`（权限 0600），数据库只存 SHA-256 哈希。请立即妥善保管。
+On first start Relayward generates a super-admin token (prefix `rw_admin_`). It is printed to the log **once** and written to `data/initial_admin_token` (mode 0600); only its SHA-256 hash is stored.
 
-### 管理 API（M2）
-
-所有接口要求 `Authorization: Bearer <token>`，JSON 收发，错误统一为 `{"error":{"code":"...","message":"..."}}`。
-
-| 方法 | 路径 | 说明 | 最低角色 |
-| ---- | ---- | ---- | -------- |
-| GET | /api/stats | 各程序发送量、成功/失败/限流/拦截数 | viewer |
-| GET | /api/messages | 发送日志，支持 app/to/status/since/until 过滤，游标分页 | viewer |
-| GET | /api/apps | 程序列表 | viewer |
-| GET | /api/apps/{name} | 单个程序配置与统计 | viewer |
-| POST | /api/apps | 创建程序，响应含一次性 SMTP 密码 | operator |
-| PATCH | /api/apps/{name} | 启停、退订开关、正文注入、限流、允许发件地址 | operator |
-| POST | /api/apps/{name}/rotate | 重置 SMTP 密码，旧密码立即失效 | operator |
-| DELETE | /api/apps/{name} | 删除程序（软删除，日志保留） | operator |
-| GET | /api/unsubscribes | 退订列表，支持 app/email 过滤，游标分页 | viewer |
-| POST | /api/unsubscribes | 手动添加退订（重复添加幂等返回既有行） | operator |
-| DELETE | /api/unsubscribes/{id} | 删除退订记录（= 恢复订阅） | operator |
-| GET | /api/tokens | token 列表（不含明文与哈希） | admin |
-| POST | /api/tokens | 创建 token，明文只返回一次 | admin |
-| DELETE | /api/tokens/{id} | 吊销 token（吊销 initial 会删除令牌文件） | admin |
-| GET | /api/audit | 管理操作审计日志 | admin |
-
-示例：
+Create a sending app and connect it:
 
 ```bash
 TOKEN=$(cat data/initial_admin_token)
-# 创建程序
-curl -s -X POST http://127.0.0.1:8081/api/apps   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d '{"name":"gitea","allowed_from":["NoReply@example.com"],"rate_per_hour":500,"display_name":"Gitea"}'
-# 分页查询日志
-curl -s "http://127.0.0.1:8081/api/messages?app=gitea&status=failed&limit=50"   -H "Authorization: Bearer $TOKEN"
+curl -s -X POST http://127.0.0.1:8081/api/apps \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"gitea","allowed_from":["noreply@example.com"],"rate_per_hour":500,"display_name":"Gitea"}'
+# the response contains the app's one-time SMTP password
 ```
 
-三种角色：admin（全部）、operator（程序与退订）、viewer（只读）。同一 IP 认证失败 10 次（10 分钟窗口）封禁 1 小时；`admin.ip_allowlist` 配置后仅允许指定 IP/CIDR 访问 /api。写操作全部落审计日志（含 token 名、IP、动作、对象）。
+Then configure the app's SMTP settings:
 
-### 退订（M3）
+| Setting | Value |
+| ------- | ----- |
+| Host / port | gateway address, `587` |
+| Username | the app name (`gitea`) |
+| Password | the one-time password returned above |
+| From | only addresses on that app's allow-list |
 
-退订开关打开的程序（默认打开）按收件人拆信：N 个 RCPT TO 拆成 N 封单独转发，每封注入各自的退订链接并剥掉 Bcc（To/Cc 原样保留）：
+When every app is switched, rotate the key at your provider and update `UPSTREAM_KEY` on the gateway only.
+
+You can also open `http://127.0.0.1:8081/admin`, paste the token, and do everything from the browser.
+
+> Going to production? Read the **[Deployment guide](docs/DEPLOYMENT.md)** — Docker, HTTPS reverse proxy, TLS on port 587, DNS, firewall, backups.
+
+## Ports
+
+| Port | Purpose | Expose to |
+| ---- | ------- | --------- |
+| 587 | SMTP ingress for your apps | only your app servers (firewall / VPN) |
+| 8080 | Public: unsubscribe pages, `/healthz` | the internet, **via HTTPS reverse proxy** |
+| 8081 | Admin API, `/admin` UI, `/healthz` | private network / VPN / SSH tunnel only |
+
+## Admin API
+
+All endpoints need `Authorization: Bearer <token>`, speak JSON and return errors as `{"error":{"code":"...","message":"..."}}`.
+
+| Method | Path | Description | Min. role |
+| ------ | ---- | ----------- | --------- |
+| GET | `/api/stats` | Per-app totals: sent / failed / rate-limited / suppressed | viewer |
+| GET | `/api/messages` | Send log; filters `app`, `to`, `status`, `since`, `until`; cursor pagination | viewer |
+| GET | `/api/apps`, `/api/apps/{name}` | List / inspect apps | viewer |
+| POST | `/api/apps` | Create app; response contains the one-time SMTP password | operator |
+| PATCH | `/api/apps/{name}` | Enable/disable, unsubscribe, body injection, rate limit, allowed senders | operator |
+| POST | `/api/apps/{name}/rotate` | Reset SMTP password; the old one stops working immediately | operator |
+| DELETE | `/api/apps/{name}` | Soft-delete (logs are kept) | operator |
+| GET/POST | `/api/unsubscribes` | List / add suppression (idempotent) | viewer / operator |
+| DELETE | `/api/unsubscribes/{id}` | Remove suppression (= re-subscribe) | operator |
+| GET/POST | `/api/tokens` | List / create tokens (plaintext shown once) | admin |
+| DELETE | `/api/tokens/{id}` | Revoke a token | admin |
+| GET | `/api/audit` | Audit log of every management write | admin |
+
+Roles: **admin** (everything), **operator** (apps and unsubscribes), **viewer** (read-only).
+
+## Unsubscribe
+
+Apps with unsubscribe enabled (the default) get one outgoing copy **per recipient**, each with its own link; `Bcc` is stripped:
 
 ```
 List-Unsubscribe: <https://mail.example.com/u/TOKEN>
 List-Unsubscribe-Post: List-Unsubscribe=One-Click
 ```
 
-令牌为 AES-256-GCM 加密的无状态令牌（HKDF-SHA256 派生密钥），链接中看不到邮箱和程序名；已退订的收件人不再转发，但程序仍收到 250，日志记为 `suppressed`。退订按「程序 + 邮箱」隔离：退订了 A 程序不影响 B 程序。
+- `GET /u/{token}` shows a confirmation page and changes nothing (mail scanners can't unsubscribe people by accident).
+- The confirm form (CSRF-protected) or a mail client's RFC 8058 one-click `POST` unsubscribes.
+- Unsubscribed recipients are not forwarded to, yet the app still receives `250`; the log records `suppressed`.
+- Suppression is per **app + address**: unsubscribing from app A does not affect app B.
+- `unsubscribe.secret` is auto-generated on first start (`data/unsubscribe_secret`). Changing it invalidates every link already sent.
 
-收件人侧的流程（public 监听，默认 :8080）：
-
-- `GET /u/{token}` 确认页，不生效（防邮件安全扫描误触）；
-- 表单「确认退订」POST 生效（带 CSRF 校验）；邮件客户端的一键退订（RFC 8058 `List-Unsubscribe=One-Click` POST）直接生效；
-- 成功页提供「重新订阅」按钮；令牌无效一律 404。
-
-管理员可通过退订 API 手动添加 / 恢复订阅（见上表），页面与管理 API 的退订写操作都进审计日志。
-
-`unsubscribe.secret` 未设置时首次启动自动生成并写入 `data/unsubscribe_secret`（0600）；更换 secret 会使所有已发出的退订链接失效。
-
-### 正文注入（M4）
-
-退订开关与正文注入开关（`body_injection`，默认开）都打开时，拆信后的每个副本还会在文本部分追加页脚，附件与其它二进制部分不动：
-
-- **text/html**：在最后一个 `</body>` 前插入浅灰水平线 + 12px 灰色小字，`unsubscribe.footer_text` 文案（支持 `{app}` 占位符，取程序 display_name）+「退订」链接；没有 `</body>` 则追加到末尾。
-- **text/plain**：末尾追加空行 + `-- ` 分隔行 + 「退订：<链接>」。
-- 按原部件的编码（quoted-printable / base64）解码、插入、再编码；7bit 部件自动升级为 quoted-printable；字符集改写/补齐为 utf-8。
-- **跳过注入**：multipart/signed、multipart/encrypted、附件（Content-Disposition: attachment）、非 UTF-8 字符集部件；程序自带 DKIM-Signature 时整个正文不注入（记 WARN），退订头仍注入。
-- **解析失败**（如残缺的 multipart）：正文原样转发，只注入退订头。
+## Local CLI
 
 ```bash
-# 按程序关闭正文注入
-curl -s -X PATCH http://127.0.0.1:8081/api/apps/gitea -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"body_injection": false}'
+./bin/relayward serve -config config.yaml
+./bin/relayward admin create-app -config config.yaml gitea -from noreply@example.com
+./bin/relayward admin reset -config config.yaml     # lost every admin token? revoke all and regenerate
+./bin/relayward healthcheck -url http://127.0.0.1:8081/healthz
 ```
 
-### 本机 CLI
+## Configuration
+
+See [`config.example.yaml`](config.example.yaml) (every `${VAR}` is expanded from the environment).
+
+| Key | Meaning |
+| --- | ------- |
+| `data_dir` | SQLite file and secrets (`initial_admin_token`, `unsubscribe_secret`) |
+| `smtp.listen`, `smtp.tls_cert`, `smtp.tls_key`, `smtp.max_message_size` | Ingress listener; set cert **and** key to enable STARTTLS (then AUTH requires it) |
+| `upstream.*` | Provider host, port, username, password (`${UPSTREAM_KEY}`), `tls: starttls\|none` |
+| `public.listen`, `public.base_url` | Recipient-facing listener; `base_url` must be an `https://` URL |
+| `admin.listen`, `admin.ip_allowlist` | Admin listener; restrict `/api` to IPs/CIDRs |
+| `unsubscribe.secret`, `unsubscribe.footer_text` | Token secret (blank = auto) and footer wording (`{app}` placeholder) |
+| `log_retention_days` | Delete message-log rows older than this many days (default 90) |
+
+## Security notes
+
+- Open port 587 only to your app servers. If apps connect over the public internet, configure `smtp.tls_cert`/`tls_key`, otherwise passwords travel in clear text.
+- `X-Forwarded-For` is **not** trusted. Behind a reverse proxy the admin IP allow-list and lockout would see the proxy's address, so keep `:8081` off the public proxy and reach it via VPN or an SSH tunnel.
+- Lost every admin token? Run `relayward admin reset` on the host.
+- Details and the reasoning behind each decision: [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+## Development
 
 ```bash
-# 创建发信程序（临时方式，正式流程走 API；输出一次性 SMTP 密码）
-./bin/relayward admin create-app -config config.yaml gitea -from NoReply@example.com
-# 忘记所有管理员 token 时，本机重置（吊销全部并重新生成 initial token）
-./bin/relayward admin reset -config config.yaml
-```
-
-### 把程序切到网关
-
-把各程序（Gitea 等）的 SMTP 配置改为：
-
-- 主机：网关地址，端口 587
-- 用户名：程序名（如 `gitea`）
-- 密码：`create-app` 输出的一次性密码
-- 发件人：只能用该程序允许列表内的地址
-
-所有程序切换完成后，在提供商后台轮换 key，只更新网关的 `UPSTREAM_KEY`。
-
-### 健康检查
-
-```bash
-curl http://127.0.0.1:8081/healthz
-# 200 {"status":"ok"} / 503 {"status":"degraded"}
-# 带 viewer 及以上 token 时返回明细（数据库、上游、最近成功转发时间、版本、运行时长）
-```
-
-上游连通性由后台每 60 秒探测一次，健康检查只读缓存结果。可直接用于 Docker HEALTHCHECK、Uptime Kuma。
-
-### 内嵌管理页（M5）
-
-浏览器打开管理端口（默认 `http://127.0.0.1:8081/admin`），粘贴 token 即可完成日常管理，无需 curl：
-
-- 统计：各程序发送量（成功 / 失败 / 限流 / 拦截）；
-- 发送日志：按程序、收件人、状态筛选，游标翻页；
-- 程序：创建（返回一次性 SMTP 密码）、启停、重置密码、退订与正文注入开关、删除；
-- 退订：列表、手动添加、恢复订阅；
-- 审计：管理操作审计（admin token）；
-- 右上角随时查看 /healthz 健康状态。
-
-页面为 embed 内嵌静态资源（HTML/JS/CSS），只调用既有管理 API，不开新接口；token 保存在浏览器 localStorage，CSP 保持 `default-src 'self'` 严格模式。
-
-## 开发
-
-```bash
-make test   # go test -race ./...（race 需要 C 编译器，Windows 上如无 gcc 先安装）
+make test   # CGO_ENABLED=1 go test -race ./...  (needs a C compiler)
 make lint   # golangci-lint run
-make run    # 构建并启动
+make run    # build and start
 ```
 
-### 工程约定
+- Only the libraries in the plan's tech-stack table are used (plus `golang.org/x/sync/errgroup`); new dependencies must be recorded in `docs/DECISIONS.md`.
+- Conventional Commits.
+- Re-render the promo videos: `pip install pillow` then `python promo/make_video.py all` (needs `ffmpeg`).
 
-- 仅依赖计划书「技术选型」表中的库（另允许 `golang.org/x/sync/errgroup`）；新增依赖须记入 `docs/DECISIONS.md`。
-- 未定义行为的处理决定记录在 [`docs/DECISIONS.md`](docs/DECISIONS.md)。
-- 提交信息使用 Conventional Commits。
+## Documentation
 
-## M1 验收自测结果
+| Document | Content |
+| -------- | ------- |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) · [中文](docs/DEPLOYMENT.zh-CN.md) | Deploying to the public internet |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | Design decisions and trade-offs (Chinese) |
+| [docs/ACCEPTANCE.zh-CN.md](docs/ACCEPTANCE.zh-CN.md) | Milestone acceptance results M1–M5 (Chinese) |
+| [docs/Relayward 邮件网关计划书.md](docs/Relayward%20邮件网关计划书.md) | Original design plan (Chinese) |
 
-验收标准：用任一程序通过网关发信成功，日志表有记录；错误密码被拒。
+## Status
 
-| 场景 | 预期 | 实际 |
-| ---- | ---- | ---- |
-| 正确凭据 + 允许的发件人发信 | 转发到上游，日志表记录 `sent` | ✅ 上游收到原文，`last_relay_success_at` 更新 |
-| 错误密码认证 | 535 拒绝 | ✅ `535 5.7.8 authentication failed` |
-| 已停用程序认证 | 535 拒绝 | ✅（同错误响应，不泄露账号状态） |
-| 未授权发件人（spoof） | 拒收 | ✅ `550 5.7.1 sender address not allowed` |
-| 首次启动 | 生成管理员 token，明文只出现一次 | ✅ 日志打印一次 + 写入 `data/initial_admin_token` |
-| 无效 token 请求 /healthz | 不返回明细 | ✅ 只返回 `{"status":"ok"}` |
-| 上游掉线 | /healthz 变 degraded，探测告警 | ✅ 60 秒探测捕获并记 WARN |
-| 单元/集成测试 | 全部通过（含 -race） | ✅ 覆盖率：api 93%、smtpd 88%、config 91%、store 75%、relay 63% |
+All five milestones (M1 relay, M2 admin API, M3 unsubscribe, M4 body injection, M5 embedded admin page) are implemented and covered by automated tests. Not yet verified against real-world mail clients: Gmail's native unsubscribe button and a broader set of real application mail samples.
 
-自动化覆盖：SMTP 认证（PLAIN/LOGIN）、发件人校验、多收件人逐条记录、上游 4xx/5xx/断连分别映射 451/554/451、日志落库、argon2id 加解密、token 生成与首次启动幂等、/healthz 各状态。
+## License
 
-## M2 验收自测结果
-
-验收标准：全程只用 API 完成「创建程序 → 发信 → 重置密码 → 旧密码失效」；viewer token 调写接口返回 403。
-
-| 场景 | 预期 | 实际 |
-| ---- | ---- | ---- |
-| API 创建 operator token | 201，明文只出现一次 | ✅ `{"token":"rw_...","token_info":{...}}` |
-| operator 经 API 创建程序 | 201，返回一次性 SMTP 密码 | ✅ 密码立即可用于 SMTP AUTH |
-| API 发出的密码发信 | 成功转发，日志 `sent` | ✅ |
-| rotate 后旧密码发信 | 535 拒绝 | ✅ |
-| rotate 后新密码发信 | 成功 | ✅ |
-| GET /api/stats | 各程序 sent/failed/rate_limited/suppressed 计数 | ✅ |
-| GET /api/messages 过滤 + 分页 | app/status 筛选、newest-first 游标 | ✅ |
-| operator 读 /api/audit | 403 | ✅ |
-| 缺 token / 无效 / 过期 | 同一 401 响应体 | ✅ |
-| 10 次认证失败后 | 该 IP 被封 429（`ip_banned`），有效 token 亦然 | ✅ |
-| viewer 调全部写接口 | 403 | ✅（71 个自动化测试含角色矩阵） |
-| SMTP 侧限流（每小时上限） | 超限 451 + 日志 `rate_limited` | ✅ 单元/集成测试覆盖 |
-
-自动化覆盖：api 包 83%（43 个测试 + 28 个子测试）、ratelimit 令牌桶/锁定窗口、smtpd 限流 451 与认证锁定、store 软删除/复活/审计事务/游标分页、admin reset。
-
-## M3 验收自测结果
-
-验收标准（计划书）：Gmail 显示原生退订按钮；点击后再发信状态为 suppressed；另一个程序照常发到。Gmail 原生按钮依赖真实 Gmail 环境，自测以「与 Gmail 相同的 RFC 8058 一键退订 POST」等价模拟（真实二进制 + 假上游 + 真实 HTTP/SMTP 客户端）。
-
-| 场景 | 预期 | 实际 |
-| ---- | ---- | ---- |
-| 2 个 RCPT + Bcc 头 + 退订开 | 拆成 2 封，各带各自退订链接，Bcc 剥离，To/Cc 原样 | ✅ 上游收到 2 封单收件人副本，令牌互不相同 |
-| 令牌内容 | 链接中看不到邮箱与程序名，可解出 (app, email) | ✅ AES-256-GCM，篡改/伪造一律 404 |
-| `GET /u/{token}` 确认页 | 显示确认文案，不产生退订 | ✅ 中文确认页（程序名 + 邮箱），退订表无记录 |
-| RFC 8058 一键退订 POST（模拟 Gmail） | 直接退订成功 | ✅ 200，退订表 source=one_click，审计记录 public + IP |
-| 退订后再发信 | 该收件人状态 `suppressed`，程序仍收 250 | ✅ 上游未收到该副本，日志一行 suppressed |
-| 另一个程序发同一邮箱 | 照常送达 | ✅ kanboard → bob 照常 sent（退订按程序隔离） |
-| 表单 POST 无 CSRF / 篡改 CSRF | 400 拒绝 | ✅ |
-| 表单确认退订 + 重新订阅按钮 | 退订生效；重新订阅后恢复投递 | ✅ source=link，重新订阅后再次发信送达 |
-| POST /api/unsubscribes 手动退订 | 201 + 邮箱小写规范化；重复添加幂等 200 | ✅ 手动退订后发信 suppressed，DELETE 后恢复 |
-| 退订列表 / 过滤 / 分页 | viewer 可读，operator 可写，viewer 写 403 | ✅ app/email 过滤、游标分页、角色矩阵 |
-| 审计 | unsubscribe.create / unsubscribe.delete 落审计 | ✅ 含 token 名（public / admin）与 IP |
-| `unsubscribe.secret` 未设置 | 首次启动自动生成存入 data_dir | ✅ `unsubscribe_secret` 文件生成，重启后复用 |
-
-自动化覆盖：unsub 包 93%（token 加解密/篡改检测/跨密钥、头部注入、Bcc 剥离含折行）、smtpd 88%（拆信逐收件人注入、拦截 250、全部拦截、退订关原样转发含 Bcc、部分上游失败 451、manager 缺失 451）、api 83%（退订端点 + 角色 + 幂等 + 审计）、web 81%（确认页无副作用、一键退订、CSRF、重新订阅、安全响应头）、store 79%（退订表 CRUD/过滤/分页/审计事务）。
-
-## M4 验收自测结果
-
-验收标准（计划书）：用 3 个以上真实程序的邮件样本测试，内容不乱码、附件完好。
-
-样本在 `internal/unsub/testdata/`（Gitea 风格 alternative、GitLab 风格 mixed+PDF 附件、PGP 签名件），golden 文件对比输出，并用 Python email 解析器独立复核解码结果。
-
-| 场景 | 预期 | 实际 |
-| ---- | ---- | ---- |
-| multipart/alternative（7bit 纯文本 + qp HTML，中文主题） | 两部分都注入页脚，内容解码后无乱码 | ✅ 纯文本升级 qp 且补 charset=utf-8；HTML 在 `</body>` 前插入灰线小字 |
-| multipart/mixed 含 base64 PDF 附件（中文 base64 HTML + qp 纯文本） | 附件字节级不变，两个文本部分注入 | ✅ 附件解码后与原文件完全一致 |
-| multipart/signed（PGP） | 正文完全不注入，仅注退订头 | ✅ 输出与输入逐字节一致（签名区完整） |
-| 真实二进制冒烟（golden 样本原文过网关） | 上游收到的副本可解析、页脚与退订头齐全 | ✅ 14/14，含 PATCH body_injection=false 后停止注入 |
-| DKIM-Signature 存在 | 跳过正文注入 + WARN 日志，退订头照常 | ✅ |
-| 残缺 multipart（缺闭合边界） | 正文原样转发，不报错给程序 | ✅ 250，原文 + 退订头 |
-| CRLF 完整性 | 输出无裸 LF | ✅ 单测断言 + golden 对比 |
-
-自动化覆盖：unsub 91%（注入/跳过/转义/确定性/golden）、smtpd 89%（HTML 与纯文本注入、DKIM 跳过、开关关闭、解析失败回退）、store 78%（body_injection 列读写）、api 83%（body_injection 创建与 PATCH）。
-
-## M5 验收自测结果
-
-验收标准（计划书）：不用 curl 也能完成日常管理。
-
-真实浏览器（Chrome + 无障碍树驱动）实测，全程页面点击、零 curl：
-
-| 场景 | 预期 | 实际 |
-| ---- | ---- | ---- |
-| 打开 :8081/admin | 页面渲染，输入框 + 五个视图 + 健康检查 | ✅ |
-| 粘贴 token 保存连接 | 显示「已连接」，统计视图自动加载 | ✅ |
-| 页面表单创建程序 | 一次性 SMTP 密码只显示一次，表格新增行 | ✅ kanboard + 一次性密码 |
-| 页面「重置密码」 | 新密码只显示一次 | ✅ |
-| 页面添加退订 | 列表出现（程序 / 邮箱 / 来源 api / 时间） | ✅ |
-| 审计视图 | 看到 unsubscribe.create 记录（token 名 + IP） | ✅ |
-| 健康检查按钮 | 显示「健康状态：ok」 | ✅ |
-| 「恢复订阅」按钮 | 行删除，列表变「暂无数据」 | ✅ |
-
-自动化覆盖：/admin 与静态资源 200、Content-Type、安全响应头、未知路径 404。
-
-## 冒烟测试（真实二进制）
-
-每次里程碑用真实二进制 + 本地假上游 + 真实 HTTP/SMTP 客户端跑端到端冒烟：M1 8 项、M2 13 项、M3 36 项、M4 14 项全部通过（脚本不入库，覆盖上述验收场景的真实进程行为，包括三端口同时监听与 0600 密钥文件生成）。
-
-## 安全说明
-
-- SMTP 端口建议只对应用服务器 IP 开放；程序分散在公网多台时必须配置 `smtp.tls_cert/tls_key`，否则密码明文传输。
-- 配置 TLS 证书后，AUTH 必须先 STARTTLS。
-- 管理端口（默认 8081）的公网防护（HTTPS、失败锁定、IP 白名单）在 M2 完善，此前建议只在内网使用。
-- 管理员 token 泄露应急：`relayward admin reset`（M2 提供）或删除数据目录后重启。
-
-## 许可
-
-见 [LICENSE](LICENSE)。
+See [LICENSE](LICENSE).
