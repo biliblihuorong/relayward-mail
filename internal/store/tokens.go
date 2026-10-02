@@ -28,8 +28,9 @@ type AdminToken struct {
 }
 
 // CreateAdminToken inserts a token; TokenHash must be the SHA-256 hex of the
-// plaintext token, which is never stored.
-func (s *Store) CreateAdminToken(ctx context.Context, tok *AdminToken) error {
+// plaintext token, which is never stored. The audit entry, when given,
+// commits in the same transaction.
+func (s *Store) CreateAdminToken(ctx context.Context, tok *AdminToken, audit *AuditEntry) error {
 	switch tok.Role {
 	case RoleAdmin, RoleOperator, RoleViewer:
 	default:
@@ -47,23 +48,100 @@ func (s *Store) CreateAdminToken(ctx context.Context, tok *AdminToken) error {
 		createdBy = *tok.CreatedBy
 	}
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO admin_tokens (name, token_hash, role, expires_at, created_by, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		tok.Name, tok.TokenHash, tok.Role, expires, createdBy, now.Unix())
-	if err != nil {
-		if isUniqueViolation(err) {
-			return fmt.Errorf("create admin token %q: %w", tok.Name, ErrConflict)
+
+	err := s.runWithAudit(ctx, audit, func(tx executor) error {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO admin_tokens (name, token_hash, role, expires_at, created_by, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			tok.Name, tok.TokenHash, tok.Role, expires, createdBy, now.Unix())
+		if err != nil {
+			if isUniqueViolation(err) {
+				return fmt.Errorf("create admin token %q: %w", tok.Name, ErrConflict)
+			}
+			return fmt.Errorf("create admin token: %w", err)
 		}
-		return fmt.Errorf("create admin token: %w", err)
-	}
-	id, err := res.LastInsertId()
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("create admin token: last insert id: %w", err)
+		}
+		tok.ID = id
+		tok.CreatedAt = now
+		return nil
+	})
+	return err
+}
+
+// ListAdminTokens returns every token, oldest first. Hashes are included for
+// internal use; API responses must not expose them.
+func (s *Store) ListAdminTokens(ctx context.Context) ([]AdminToken, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, token_hash, role, expires_at, last_used, created_by, created_at
+		 FROM admin_tokens ORDER BY id`)
 	if err != nil {
-		return fmt.Errorf("create admin token: last insert id: %w", err)
+		return nil, fmt.Errorf("list admin tokens: %w", err)
 	}
-	tok.ID = id
-	tok.CreatedAt = now
-	return nil
+	defer rows.Close()
+
+	var tokens []AdminToken
+	for rows.Next() {
+		tok, err := scanToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, *tok)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list admin tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// GetAdminTokenByID returns one token, or ErrNotFound.
+func (s *Store) GetAdminTokenByID(ctx context.Context, id int64) (*AdminToken, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, name, token_hash, role, expires_at, last_used, created_by, created_at
+		 FROM admin_tokens WHERE id = ?`, id)
+	return scanToken(row)
+}
+
+// DeleteAdminToken revokes a token by removing its row. The audit entry, when
+// given, commits in the same transaction.
+func (s *Store) DeleteAdminToken(ctx context.Context, id int64, audit *AuditEntry) error {
+	return s.runWithAudit(ctx, audit, func(tx executor) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM admin_tokens WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("delete admin token %d: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("delete admin token %d: rows affected: %w", id, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("delete admin token %d: %w", id, ErrNotFound)
+		}
+		return nil
+	})
+}
+
+// ResetAdminTokens revokes every token and returns how many were removed.
+// Used by the local `admin reset` command when all tokens are lost.
+func (s *Store) ResetAdminTokens(ctx context.Context, audit *AuditEntry) (int64, error) {
+	var count int64
+	err := s.runWithAudit(ctx, audit, func(tx executor) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM admin_tokens`)
+		if err != nil {
+			return fmt.Errorf("reset admin tokens: %w", err)
+		}
+		count, err = res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("reset admin tokens: rows affected: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // HasAdminToken reports whether at least one admin token exists.
@@ -82,7 +160,15 @@ func (s *Store) GetAdminTokenByHash(ctx context.Context, tokenHash string) (*Adm
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, name, token_hash, role, expires_at, last_used, created_by, created_at
 		 FROM admin_tokens WHERE token_hash = ?`, tokenHash)
+	return scanToken(row)
+}
 
+// tokenScanner covers *sql.Row and *sql.Rows.
+type tokenScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanToken(row tokenScanner) (*AdminToken, error) {
 	var tok AdminToken
 	var expires, lastUsed, createdBy sql.NullInt64
 	var created int64
@@ -91,7 +177,7 @@ func (s *Store) GetAdminTokenByHash(ctx context.Context, tokenHash string) (*Adm
 		return nil, fmt.Errorf("get admin token: %w", ErrNotFound)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get admin token: %w", err)
+		return nil, fmt.Errorf("scan admin token: %w", err)
 	}
 
 	if expires.Valid {

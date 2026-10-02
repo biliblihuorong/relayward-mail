@@ -30,8 +30,8 @@ func TestOpenAppliesMigrations(t *testing.T) {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("user_version = %d, want 1", version)
+	if version != 2 { // 0001_init + 0002_management
+		t.Fatalf("user_version = %d, want 2", version)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -63,7 +63,7 @@ func seedApp(t *testing.T, s *Store, name string) *App {
 		RatePerHour:  500,
 		DisplayName:  "App " + name,
 	}
-	if err := s.CreateApp(context.Background(), app); err != nil {
+	if err := s.CreateApp(context.Background(), app, nil); err != nil {
 		t.Fatalf("CreateApp: %v", err)
 	}
 	return app
@@ -118,7 +118,7 @@ func TestCreateAppConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	dup := &App{Name: "gitea", PasswordHash: hash, AllowedFrom: []string{"a@b.com"}}
-	if err := s.CreateApp(context.Background(), dup); !errors.Is(err, ErrConflict) {
+	if err := s.CreateApp(context.Background(), dup, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, want ErrConflict", err)
 	}
 }
@@ -145,7 +145,7 @@ func TestCreateAppValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.CreateApp(ctx, tt.app)
+			err := s.CreateApp(ctx, tt.app, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("CreateApp() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -240,7 +240,7 @@ func TestAdminTokens(t *testing.T) {
 
 	raw := "rw_admin_abcdef"
 	tok := &AdminToken{Name: "initial", Role: RoleAdmin, TokenHash: HashToken(raw)}
-	if err := s.CreateAdminToken(ctx, tok); err != nil {
+	if err := s.CreateAdminToken(ctx, tok, nil); err != nil {
 		t.Fatalf("CreateAdminToken: %v", err)
 	}
 	if tok.ID == 0 || tok.CreatedAt.IsZero() {
@@ -279,7 +279,7 @@ func TestAdminTokens(t *testing.T) {
 	}
 
 	bad := &AdminToken{Name: "x", Role: "root", TokenHash: "h"}
-	if err := s.CreateAdminToken(ctx, bad); err == nil {
+	if err := s.CreateAdminToken(ctx, bad, nil); err == nil {
 		t.Error("invalid role accepted")
 	}
 }
