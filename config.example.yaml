@@ -1,0 +1,30 @@
+# relayward 配置示例。所有 ${VAR} 从环境变量读取；密钥不要写进文件。
+
+data_dir: ./data
+
+smtp:
+  listen: ":587"
+  tls_cert: ""                 # 可选，留空则不开 STARTTLS（仅建议纯内网部署留空）
+  tls_key: ""
+  max_message_size: 10MB
+
+upstream:
+  host: smtp.provider.com
+  port: 587
+  username: apikey
+  password: ${UPSTREAM_KEY}    # 从环境变量读，必填
+  tls: starttls                # starttls 或 none（none 仅用于本地测试）
+
+public:                        # 退订页面（M3）与 /healthz
+  listen: ":8080"
+  base_url: https://mail.example.com
+
+admin:                         # 管理 API（M2）与 /healthz
+  listen: ":8081"
+  ip_allowlist: []             # 空 = 不限制（M2 起生效）
+
+unsubscribe:
+  secret: ${UNSUB_SECRET}      # 留空则首次启动自动生成并存入 data_dir
+  footer_text: "不想再收到此类邮件？点此退订"
+
+log_retention_days: 90
