@@ -188,3 +188,20 @@ func TestParseSize(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyProtocolTrustedValidation(t *testing.T) {
+	t.Setenv("TEST_UPSTREAM_KEY", "k")
+	ok := writeTempConfig(t, validConfig+"\n")
+	cfg, err := Load(ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SMTP.ProxyProtocolTrusted = []string{"172.18.0.0/16", "10.0.0.5"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid entries rejected: %v", err)
+	}
+	cfg.SMTP.ProxyProtocolTrusted = []string{"not-an-ip"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("invalid entry accepted")
+	}
+}

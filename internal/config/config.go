@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"relayward-mail/internal/proxyproto"
 )
 
 // Config is the top-level configuration of relayward.
@@ -31,6 +33,10 @@ type SMTP struct {
 	TLSCert        string `yaml:"tls_cert"`
 	TLSKey         string `yaml:"tls_key"`
 	MaxMessageSize Size   `yaml:"max_message_size"`
+	// ProxyProtocolTrusted lists proxy addresses (IP or CIDR) whose
+	// connections must begin with a PROXY protocol v1 header carrying the
+	// real client address. Empty disables PROXY protocol entirely.
+	ProxyProtocolTrusted []string `yaml:"proxy_protocol_trusted"`
 }
 
 // Upstream configures the SMTP account of the real mail provider.
@@ -155,6 +161,9 @@ func (c *Config) Validate() error {
 
 	if (c.SMTP.TLSCert == "") != (c.SMTP.TLSKey == "") {
 		return fmt.Errorf("config: smtp.tls_cert and smtp.tls_key must be set together")
+	}
+	if _, err := proxyproto.ParseTrusted(c.SMTP.ProxyProtocolTrusted); err != nil {
+		return fmt.Errorf("config: smtp.proxy_protocol_trusted: %w", err)
 	}
 	if c.LogRetentionDays < 0 {
 		return fmt.Errorf("config: log_retention_days must not be negative")
