@@ -8,15 +8,15 @@
 
 Single static Go binary · one SQLite file · zero runtime dependencies
 
-[30 s promo (EN)](docs/media/relayward-promo-en.mp4) · [30 s promo (中文)](docs/media/relayward-promo-zh.mp4) · [Deployment guide](docs/DEPLOYMENT.md) · [部署指南](docs/DEPLOYMENT.zh-CN.md)
+[30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [30 s promo (中文)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [Deployment guide](docs/DEPLOYMENT.md) · [部署指南](docs/DEPLOYMENT.zh-CN.md)
 
 </div>
 
 ---
 
-[![Relayward 30-second promo](docs/media/relayward-promo-en.gif)](docs/media/relayward-promo-en.mp4)
+[![Relayward 30-second promo](docs/media/relayward-promo-en.gif)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4)
 
-<sub>Click the animation for the full 30 s video (with music) · [中文版视频](docs/media/relayward-promo-zh.mp4)</sub>
+<sub>Click the animation for the full 30 s video (with music) · [中文版视频](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4)</sub>
 
 ## Why Relayward
 
@@ -157,6 +157,7 @@ See [`config.example.yaml`](config.example.yaml) (every `${VAR}` is expanded fro
 | --- | ------- |
 | `data_dir` | SQLite file and secrets (`initial_admin_token`, `unsubscribe_secret`) |
 | `smtp.listen`, `smtp.tls_cert`, `smtp.tls_key`, `smtp.max_message_size` | Ingress listener; set cert **and** key to enable STARTTLS (then AUTH requires it) |
+| `smtp.proxy_protocol_trusted` | Proxy IPs/CIDRs allowed to send a PROXY protocol v1 header with the real client IP (nginx/OpenResty `stream` TLS termination, see the [Deployment guide](docs/DEPLOYMENT.md)). Empty = off |
 | `upstream.*` | Provider host, port, username, password (`${UPSTREAM_KEY}`), `tls: starttls\|none` |
 | `public.listen`, `public.base_url` | Recipient-facing listener; `base_url` must be an `https://` URL |
 | `admin.listen`, `admin.ip_allowlist` | Admin listener; restrict `/api` to IPs/CIDRs |
@@ -165,7 +166,7 @@ See [`config.example.yaml`](config.example.yaml) (every `${VAR}` is expanded fro
 
 ## Security notes
 
-- Open port 587 only to your app servers. If apps connect over the public internet, configure `smtp.tls_cert`/`tls_key`, otherwise passwords travel in clear text.
+- Open port 587 only to your app servers. If apps connect over the public internet, configure `smtp.tls_cert`/`tls_key` (or terminate TLS on nginx, see the Deployment guide), otherwise passwords travel in clear text.
 - `X-Forwarded-For` is **not** trusted. Behind a reverse proxy the admin IP allow-list and lockout would see the proxy's address, so keep `:8081` off the public proxy and reach it via VPN or an SSH tunnel.
 - Lost every admin token? Run `relayward admin reset` on the host.
 - Details and the reasoning behind each decision: [`docs/DECISIONS.md`](docs/DECISIONS.md).

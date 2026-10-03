@@ -8,15 +8,15 @@
 
 单个静态 Go 二进制 · 一个 SQLite 文件 · 运行零依赖
 
-[30 秒宣传片（中文）](docs/media/relayward-promo-zh.mp4) · [30 s promo (EN)](docs/media/relayward-promo-en.mp4) · [部署指南](docs/DEPLOYMENT.zh-CN.md) · [Deployment guide](docs/DEPLOYMENT.md)
+[30 秒宣传片（中文）](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [部署指南](docs/DEPLOYMENT.zh-CN.md) · [Deployment guide](docs/DEPLOYMENT.md)
 
 </div>
 
 ---
 
-[![Relayward 30 秒宣传片](docs/media/relayward-promo-zh.gif)](docs/media/relayward-promo-zh.mp4)
+[![Relayward 30 秒宣传片](docs/media/relayward-promo-zh.gif)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4)
 
-<sub>点击动图观看完整 30 秒视频（含配乐）· [English video](docs/media/relayward-promo-en.mp4)</sub>
+<sub>点击动图观看完整 30 秒视频（含配乐）· [English video](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4)</sub>
 
 ## 为什么需要 Relayward
 
@@ -157,6 +157,7 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 | ------ | ---- |
 | `data_dir` | SQLite 文件与密钥文件（`initial_admin_token`、`unsubscribe_secret`） |
 | `smtp.listen`、`smtp.tls_cert`、`smtp.tls_key`、`smtp.max_message_size` | 入口监听；证书和私钥**同时**配置才启用 STARTTLS（启用后 AUTH 必须先 STARTTLS） |
+| `smtp.proxy_protocol_trusted` | 允许发送 PROXY protocol v1 头（携带真实客户端 IP）的代理 IP/CIDR，用于 nginx/OpenResty `stream` 终结 TLS，见[部署指南](docs/DEPLOYMENT.zh-CN.md)。留空 = 关闭 |
 | `upstream.*` | 提供商主机、端口、用户名、密码（`${UPSTREAM_KEY}`）、`tls: starttls\|none` |
 | `public.listen`、`public.base_url` | 面向收件人的监听；`base_url` 必须是 `https://` |
 | `admin.listen`、`admin.ip_allowlist` | 管理监听；用 IP/CIDR 限制 `/api` |
@@ -165,7 +166,7 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 
 ## 安全说明
 
-- 587 端口只对应用服务器开放；程序经公网连接时必须配置 `smtp.tls_cert`/`tls_key`，否则密码明文传输。
+- 587 端口只对应用服务器开放；程序经公网连接时必须配置 `smtp.tls_cert`/`tls_key`（或在 nginx 上终结 TLS，见部署指南），否则密码明文传输。
 - **不信任** `X-Forwarded-For`。放在反向代理后，管理端的 IP 白名单与失败锁定看到的是代理地址，所以不要把 `:8081` 挂到公网代理上，请经 VPN 或 SSH 隧道访问。
 - 丢了所有管理员 token：在主机上运行 `relayward admin reset`。
 - 各项设计取舍与理由见 [`docs/DECISIONS.md`](docs/DECISIONS.md)。

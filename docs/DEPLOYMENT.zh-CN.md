@@ -19,6 +19,7 @@
 | 端口 | 用途 | 暴露方式 |
 | ---- | ---- | -------- |
 | 587 | 应用发信的 SMTP 入口 | 公网**必须启用 TLS**；最好限定为应用服务器 IP |
+| 465（可选） | 隐式 TLS 的 SMTP，由 nginx/OpenResty `stream` 终结后转发到 Relayward 的 587 | 见[在 nginx / OpenResty 上终结 SMTP 的 TLS](#在-nginx--openresty-上终结-smtp-的-tls可选) |
 | 8080 | 退订页面、`/healthz` | 只绑 `127.0.0.1`，经 nginx 的 443 对外 |
 | 8081 | 管理 API、`/admin` 页面 | 只绑 `127.0.0.1`，通过 SSH 隧道或 VPN 访问 |
 
@@ -261,6 +262,37 @@ ssh -N -L 8081:127.0.0.1:8081 user@mail.example.com
 sudo docker compose exec relayward /relayward admin create-app \
   -config /etc/relayward/config.yaml gitea -from noreply@example.com
 ```
+
+## 在 nginx / OpenResty 上终结 SMTP 的 TLS（可选）
+
+如果证书在 nginx（或 OpenResty / 1Panel）上，可以用 `stream` 模块让它为 SMTP 终结 TLS。此时客户端使用 **465 端口的隐式 TLS**（选 "SSL/TLS"，不是 STARTTLS；nginx 无法代理 STARTTLS）。
+
+`smtp.tls_cert` / `smtp.tls_key` 留空，Relayward 不要暴露在公网（与 nginx 同一 Docker 网络，或只绑 `127.0.0.1`），并开启 PROXY protocol，这样 Relayward 仍能看到真实客户端 IP（`allowed_from`、限流、登录失败锁定都依赖它）：
+
+```nginx
+# nginx.conf 顶层，与 http {} 同级
+stream {
+    server {
+        listen 465 ssl;
+        ssl_certificate     /path/to/fullchain.pem;
+        ssl_certificate_key /path/to/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        proxy_pass          relayward:587;   # 共享 Docker 网络上的容器名
+        proxy_protocol      on;              # 传递真实客户端 IP
+        proxy_timeout       5m;
+    }
+}
+```
+
+```yaml
+smtp:
+  listen: ":587"
+  proxy_protocol_trusted: ["172.18.0.0/16"]   # nginx 容器所在网段 / IP
+```
+
+只有 `proxy_protocol_trusted` 里的来源才会被要求发送该头（缺失则断开），其他来源按普通连接处理，所以外部客户端无法伪造地址。**不要**只开 `proxy_protocol on` 而不配 `proxy_protocol_trusted`：Relayward 会把头当成 SMTP 命令，所有连接都会失败。nginx 容器的地址用 `docker network inspect <网络名>` 查看。
+
+验证：`openssl s_client -connect mail.example.com:465 -crlf` 应显示你的证书和 `220` 欢迎语。
 
 ## 方案 B：systemd，不用 Docker
 

@@ -19,6 +19,7 @@ This guide takes you from a blank Linux VPS to a gateway that your applications 
 | Port | Purpose | Exposure |
 | ---- | ------- | -------- |
 | 587 | SMTP ingress for apps | Internet **only with TLS configured**; ideally restricted to your app servers' IPs |
+| 465 (optional) | Implicit-TLS SMTP, terminated on nginx/OpenResty `stream` and forwarded to Relayward's 587 | See [Terminating SMTP TLS on nginx / OpenResty](#terminating-smtp-tls-on-nginx--openresty-optional) |
 | 8080 | Unsubscribe pages and `/healthz` | Bound to `127.0.0.1`, published through nginx on 443 |
 | 8081 | Admin API, `/admin` UI | Bound to `127.0.0.1`, reached through an SSH tunnel or VPN |
 
@@ -261,6 +262,37 @@ In the admin UI (or via `POST /api/apps`), create an app. The one-time SMTP pass
 sudo docker compose exec relayward /relayward admin create-app \
   -config /etc/relayward/config.yaml gitea -from noreply@example.com
 ```
+
+## Terminating SMTP TLS on nginx / OpenResty (optional)
+
+If your certificate lives on nginx (or OpenResty / 1Panel) you can let it terminate TLS for SMTP using the `stream` module. Clients then connect with **implicit TLS on port 465** ("SSL/TLS" mode, not STARTTLS; nginx cannot proxy STARTTLS).
+
+Leave `smtp.tls_cert` / `smtp.tls_key` empty, keep Relayward off the public network (same Docker network as nginx, or `127.0.0.1` only), and turn on PROXY protocol so Relayward still sees the real client IP (needed for `allowed_from`, rate limits and the failed-login lockout):
+
+```nginx
+# top level of nginx.conf, next to http {}
+stream {
+    server {
+        listen 465 ssl;
+        ssl_certificate     /path/to/fullchain.pem;
+        ssl_certificate_key /path/to/privkey.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        proxy_pass          relayward:587;   # container name on a shared Docker network
+        proxy_protocol      on;              # send the real client IP
+        proxy_timeout       5m;
+    }
+}
+```
+
+```yaml
+smtp:
+  listen: ":587"
+  proxy_protocol_trusted: ["172.18.0.0/16"]   # the nginx container's network / IP
+```
+
+Only peers listed in `proxy_protocol_trusted` are expected to send the header (and are dropped if they do not); everyone else is treated normally, so an outside client cannot forge its address. Do **not** enable `proxy_protocol on` without setting `proxy_protocol_trusted`: Relayward would read the header as SMTP and every connection would fail. Find the nginx container's address with `docker network inspect <network>`.
+
+Check it: `openssl s_client -connect mail.example.com:465 -crlf` should show your certificate and a `220` greeting.
 
 ## Option B: systemd without Docker
 

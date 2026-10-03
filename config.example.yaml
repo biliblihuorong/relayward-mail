@@ -7,6 +7,8 @@ smtp:
   tls_cert: ""                 # 可选，留空则不开 STARTTLS（仅建议纯内网部署留空）
   tls_key: ""
   max_message_size: 10MB
+  proxy_protocol_trusted: []   # 可选：前面有 nginx/OpenResty stream 且开了 proxy_protocol on 时，
+                               # 填代理的 IP/CIDR（如 ["172.18.0.0/16"]），以获取真实客户端 IP
 
 upstream:
   host: smtp.provider.com

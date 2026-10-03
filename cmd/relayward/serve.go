@@ -22,6 +22,7 @@ import (
 
 	"relayward-mail/internal/api"
 	"relayward-mail/internal/config"
+	"relayward-mail/internal/proxyproto"
 	"relayward-mail/internal/ratelimit"
 	"relayward-mail/internal/relay"
 	"relayward-mail/internal/smtpd"
@@ -102,6 +103,12 @@ func serve(args []string) error {
 	if err != nil {
 		return fmt.Errorf("listen smtp: %w", err)
 	}
+	trusted, err := proxyproto.ParseTrusted(cfg.SMTP.ProxyProtocolTrusted)
+	if err != nil {
+		return fmt.Errorf("smtp.proxy_protocol_trusted: %w", err)
+	}
+	// Closing the wrapper closes the underlying listener too.
+	smtpListener = proxyproto.Listener(smtpListener, trusted)
 
 	startedAt := time.Now()
 	apiSrv := api.New(api.Options{
