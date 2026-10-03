@@ -8,7 +8,7 @@
 
 单个静态 Go 二进制 · 一个 SQLite 文件 · 运行零依赖
 
-[30 秒宣传片（中文）](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [部署指南](docs/DEPLOYMENT.zh-CN.md) · [Deployment guide](docs/DEPLOYMENT.md)
+[30 秒宣传片（中文）](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [部署指南](docs/DEPLOYMENT.zh-CN.md) · [部署指南](README.zh-CN.md)
 
 </div>
 
