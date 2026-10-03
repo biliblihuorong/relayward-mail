@@ -8,7 +8,7 @@
 
 Single static Go binary · one SQLite file · zero runtime dependencies
 
-[30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [30 s promo (中文)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [Deployment guide](docs/DEPLOYMENT.md) · [部署指南](docs/DEPLOYMENT.zh-CN.md)
+[30 s promo (EN)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4) · [30 s promo (中文)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4) · [Deployment guide](docs/DEPLOYMENT.md) 
 
 </div>
 
