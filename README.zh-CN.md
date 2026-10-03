@@ -14,9 +14,10 @@
 
 ---
 
-[![Relayward 30 秒宣传片](docs/media/relayward-promo-zh.gif)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4)
-
-<sub>点击动图观看完整 30 秒视频（含配乐）· [English video](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4)</sub>
+<div align="center">
+<video src="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4" controls muted width="720"></video>
+<br><sub>30 秒宣传片 · 播放器没有加载的话，<a href="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4">点此打开视频</a> · <a href="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4">English</a></sub>
+</div>
 
 ## 为什么需要 Relayward
 
@@ -94,7 +95,7 @@ curl -s -X POST http://127.0.0.1:8081/api/apps \
 
 也可以直接打开 `http://127.0.0.1:8081/admin`，粘贴 token，全部在浏览器里完成。
 
-> 要上线到公网？请阅读 **[部署指南](docs/DEPLOYMENT.zh-CN.md)**：Docker、HTTPS 反向代理、587 端口 TLS、DNS、防火墙、备份。
+> 要上线到公网？请阅读 **[部署指南](docs/DEPLOYMENT.zh-CN.md)**：Docker Compose、nginx/OpenResty 的 HTTPS 与 SMTP TLS、管理端访问、备份。
 
 ## 端口
 

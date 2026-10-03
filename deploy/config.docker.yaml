@@ -1,0 +1,33 @@
+# Relayward config for the Docker Compose setup. Copy to config.yaml and edit the marked lines.
+data_dir: /data
+
+smtp:
+  listen: ":587"                 # inside the container; compose publishes it as 127.0.0.1:2525
+  max_message_size: 10MB
+  # TLS is terminated by nginx (stream), so no certificate here.
+  # nginx sends a PROXY header with the real client IP; trust only your docker networks.
+  proxy_protocol_trusted: ["172.16.0.0/12"]
+  # If Relayward should do TLS itself instead, remove proxy_protocol_trusted and set:
+  # tls_cert: /certs/fullchain.pem
+  # tls_key: /certs/privkey.pem
+
+upstream:                        # EDIT: your real mail provider
+  host: smtp.your-provider.com
+  port: 587
+  username: apikey
+  password: ${UPSTREAM_KEY}
+  tls: starttls
+
+public:
+  listen: ":8080"
+  base_url: https://mail.example.com   # EDIT: your domain, must be https
+
+admin:
+  listen: ":8081"
+  ip_allowlist: []               # empty = no IP filter; protection is the 127.0.0.1 binding + token
+
+unsubscribe:
+  secret: ${UNSUB_SECRET}
+  footer_text: "Don't want these emails? Unsubscribe"
+
+log_retention_days: 90
