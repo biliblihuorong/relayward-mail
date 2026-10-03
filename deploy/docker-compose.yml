@@ -1,0 +1,30 @@
+# Relayward — Docker Compose example (bind mounts, no named volumes).
+# Run from this directory:  docker compose up -d --build
+#
+# One-time prep (the container runs as uid 65532, so it must own ./data):
+#   mkdir -p data && sudo chown -R 65532:65532 data
+#   cp .env.example .env && cp config.docker.yaml config.yaml   # then edit both
+services:
+  relayward:
+    image: relayward:latest
+    build:
+      context: ..               # build from this repo; drop if you already built/pulled the image
+    container_name: relayward
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # Everything is bound to 127.0.0.1: only a reverse proxy ON THIS HOST can reach it.
+      - "127.0.0.1:8080:8080"   # public (unsubscribe pages)  -> nginx HTTPS 443
+      - "127.0.0.1:2525:587"    # SMTP (plain)                -> nginx stream, e.g. 465 with TLS
+      - "127.0.0.1:8081:8081"   # admin API + /admin UI       -> SSH tunnel / VPN only, never a public proxy
+    volumes:
+      - ./config.yaml:/etc/relayward/config.yaml:ro
+      - ./data:/data            # SQLite + secrets live in ./data on the host
+      # - ./certs:/certs:ro     # only if Relayward itself terminates SMTP TLS (see the deployment guide)
+
+    # Using 1Panel/OpenResty in a container? Instead of the ports above, join its network and
+    # point nginx at relayward:8080 and relayward:587:
+    #   networks: [1panel-network]
+# networks:
+#   1panel-network:
+#     external: true

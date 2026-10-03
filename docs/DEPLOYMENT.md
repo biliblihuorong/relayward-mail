@@ -1,90 +1,84 @@
-# Deploying Relayward to the public internet
+# Deploying Relayward
 
 **English** | [简体中文](DEPLOYMENT.zh-CN.md) · Back to [README](../README.md)
 
-This guide takes you from a blank Linux VPS to a gateway that your applications can reach over the internet, with HTTPS unsubscribe pages and TLS on the SMTP port.
+Goal: run Relayward in Docker on a server that already has nginx (or OpenResty / 1Panel) with a certificate, so that
 
-> The commands below were written against the code in this repository (ports, paths, config keys, container layout). The Docker image build, container start-up, `/data` volume permissions and the binding of port 587 were tested locally; the nginx, certbot and firewall steps have not been run end-to-end on a real VPS yet, so rehearse on a throw-away server first.
+- recipients open unsubscribe links over **HTTPS**, and
+- your apps send mail over **TLS**,
 
-## 0. What you are building
+while Relayward itself never needs a certificate.
+
+> Tested locally: image build, `docker compose` start-up with `./data` bind-mounted, and the PROXY-protocol listener. The nginx/certificate steps have not been run on a real server yet, so try them on a throw-away machine first.
+
+## 1. How it fits together
 
 ```
- apps (any network) ──STARTTLS :587──▶ ┌─────────────────────┐ ──STARTTLS──▶ mail provider
-                                        │ relayward (Docker)  │
- recipients ──HTTPS :443──▶ nginx ───▶ │  :8080 public       │
-                                        │  :8081 admin ◀── SSH tunnel / VPN (never public)
-                                        └─────────────────────┘
+ apps       ──TLS :465────▶ ┐
+ recipients ──HTTPS :443───▶ ├ nginx / OpenResty (holds the certificate)
+                            ┘        │ plain HTTP / SMTP on 127.0.0.1
+                                     ▼
+                     Relayward in Docker (:8080 public, :587 SMTP, :8081 admin)
+                                     │ STARTTLS :587
+                                     ▼
+                               your mail provider
+
+ you ── SSH tunnel ──▶ 127.0.0.1:8081 (admin, never public)
 ```
 
-| Port | Purpose | Exposure |
-| ---- | ------- | -------- |
-| 587 | SMTP ingress for apps | Internet **only with TLS configured**; ideally restricted to your app servers' IPs |
-| 465 (optional) | Implicit-TLS SMTP, terminated on nginx/OpenResty `stream` and forwarded to Relayward's 587 | See [Terminating SMTP TLS on nginx / OpenResty](#terminating-smtp-tls-on-nginx--openresty-optional) |
-| 8080 | Unsubscribe pages and `/healthz` | Bound to `127.0.0.1`, published through nginx on 443 |
-| 8081 | Admin API, `/admin` UI | Bound to `127.0.0.1`, reached through an SSH tunnel or VPN |
+| Port (host) | What | Who may reach it |
+| ----------- | ---- | ---------------- |
+| 443 | Unsubscribe pages (HTTPS) → Relayward `8080` | Everyone (nginx, certificate on nginx) |
+| 465 | SMTP over TLS → Relayward `587` | Your apps (nginx `stream`, certificate on nginx) |
+| 8081 | Admin API and `/admin` page | **Only you**, via SSH tunnel / VPN. Never put it behind a public proxy |
 
-Why `8081` stays private: Relayward does **not** trust `X-Forwarded-For`. Behind a reverse proxy, the admin IP allow-list and the failure lockout would only ever see the proxy's address. Do not put the admin port on a public proxy.
+## 2. Do I need a certificate for Relayward?
 
-## 1. Prerequisites
+**No, if nginx terminates TLS** (this guide). Relayward only listens in plain text on `127.0.0.1`; nginx holds the certificate and encrypts everything on the public side. One certificate for `mail.example.com` covers both 443 and 465.
 
-- A Linux server with a public IPv4 address (1 vCPU / 512 MB RAM is plenty), root or sudo access.
-- A domain name you control, e.g. `mail.example.com`.
-- An account at an SMTP provider (SES, SendGrid, Mailgun, Postmark, your own relay…) with: host, port 587, username, password/API key. The sending domain's **SPF / DKIM / DMARC** must be set up at that provider. Relayward does not sign mail itself.
-- Docker Engine with the Compose plugin (or see [Option B](#option-b-systemd-without-docker)).
-- Outbound access from the server to your provider on port 587.
+| Where TLS is handled | Certificate needed in Relayward? | Apps connect with |
+| -------------------- | -------------------------------- | ----------------- |
+| nginx (**this guide**) | No | port 465, "SSL/TLS" |
+| Relayward itself | Yes: set `smtp.tls_cert` and `smtp.tls_key`, mount the files | port 587, "STARTTLS" |
+| Nobody (plain) | No | Only acceptable on a private network |
 
-## 2. DNS
+nginx cannot proxy STARTTLS, so with nginx in front, apps must use **implicit TLS (465)**. The `base_url` for unsubscribe links must be `https://…`, which also needs the certificate on nginx.
 
-Create an `A` record (and `AAAA` if you have IPv6) pointing the gateway host name at the server:
+## 3. Prerequisites
 
-| Type | Name | Value |
-| ---- | ---- | ----- |
-| A | `mail.example.com` | your server IP |
+- A Linux server with Docker + the Compose plugin, and nginx/OpenResty with a valid certificate for your domain (e.g. `mail.example.com`, DNS `A` record pointing to the server).
+- An SMTP account at a provider (SES, SendGrid, Mailgun, Postmark…): host, port 587, username, password/API key. Set up SPF / DKIM / DMARC for your sending domain there; Relayward does not sign mail.
+- The server can reach the provider on port 587.
 
-`public.base_url` in the configuration uses this name; unsubscribe links in every mail point at it, so choose it carefully. Mails already sent keep the old link, so if you ever rename it, keep the old name serving `/u/...` too.
+## 4. Start Relayward
 
-## 3. Firewall
-
-Example with `ufw`:
+The files below are also in [`deploy/`](../deploy).
 
 ```bash
-sudo ufw default deny incoming
-sudo ufw allow 22/tcp                 # SSH
-sudo ufw allow 80/tcp                 # ACME challenge + HTTP->HTTPS redirect
-sudo ufw allow 443/tcp                # unsubscribe pages
-# SMTP ingress: restrict to your app servers if they have fixed IPs (recommended)
-sudo ufw allow from 203.0.113.10 to any port 587 proto tcp
-# ...or open to everyone (only with TLS configured in step 6):
-# sudo ufw allow 587/tcp
-sudo ufw enable
+git clone https://github.com/biliblihuorong/relayward-mail.git
+cd relayward-mail/deploy
+
+cp .env.example .env              && chmod 600 .env
+cp config.docker.yaml config.yaml
+mkdir -p data && sudo chown -R 65532:65532 data    # the container runs as uid 65532
 ```
 
-> Docker publishes ports by editing iptables directly and **bypasses ufw**. That is why the compose file below binds 8080/8081 to `127.0.0.1` explicitly. Check with `ss -tlnp` after starting.
-
-If your cloud provider has a separate security group / firewall panel, mirror the same rules there.
-
-## 4. Get the code and build the image
+**`.env`**: secrets only.
 
 ```bash
-sudo mkdir -p /opt/relayward && cd /opt/relayward
-sudo git clone https://github.com/biliblihuorong/relayward-mail.git src
-sudo docker build -t relayward:latest ./src
+UPSTREAM_KEY=your-provider-smtp-password-or-api-key
+UNSUB_SECRET=        # leave empty: generated once and stored in ./data
 ```
 
-The image is a static binary on `distroless/static:nonroot` (uid/gid 65532), with `/data` pre-created and owned by that user.
-
-## 5. Configuration
-
-`/opt/relayward/config.yaml`:
+**`config.yaml`**: edit the three marked values (`upstream.*`, `public.base_url`).
 
 ```yaml
 data_dir: /data
 
 smtp:
   listen: ":587"
-  tls_cert: /certs/fullchain.pem
-  tls_key: /certs/privkey.pem
   max_message_size: 10MB
+  proxy_protocol_trusted: ["172.16.0.0/12"]   # lets nginx pass the real client IP (see §5)
 
 upstream:
   host: smtp.your-provider.com
@@ -95,71 +89,64 @@ upstream:
 
 public:
   listen: ":8080"
-  base_url: https://mail.example.com      # must be https
+  base_url: https://mail.example.com           # your domain, must be https
 
 admin:
   listen: ":8081"
-  ip_allowlist: []                         # optional: e.g. ["10.0.0.0/8"] when reached over a VPN
+  ip_allowlist: []
 
 unsubscribe:
-  secret: ${UNSUB_SECRET}                  # leave empty to auto-generate into /data/unsubscribe_secret
+  secret: ${UNSUB_SECRET}
   footer_text: "Don't want these emails? Unsubscribe"
 
 log_retention_days: 90
 ```
 
-`/opt/relayward/.env` (mode `0600`, never commit it):
+**`docker-compose.yml`**: all data sits in plain folders next to it (no Docker volumes):
 
-```bash
-UPSTREAM_KEY=your-provider-smtp-password-or-api-key
-# UNSUB_SECRET=   # optional; empty = auto-generated and stored in the data volume
+```yaml
+services:
+  relayward:
+    image: relayward:latest
+    build:
+      context: ..
+    container_name: relayward
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"   # unsubscribe pages -> nginx 443
+      - "127.0.0.1:2525:587"    # SMTP (plain)      -> nginx stream 465
+      - "127.0.0.1:8081:8081"   # admin             -> SSH tunnel only
+    volumes:
+      - ./config.yaml:/etc/relayward/config.yaml:ro
+      - ./data:/data
 ```
 
 ```bash
-sudo chmod 600 /opt/relayward/.env
+docker compose up -d --build
+docker compose ps                 # wait for "healthy"
+docker compose logs relayward     # find: generated initial admin token
 ```
 
-> `smtp.tls_cert` and `smtp.tls_key` must be set together. Once set, clients must `STARTTLS` before `AUTH`. Without them, passwords cross the network in clear text. That is acceptable only inside a private network.
+Check `ss -tlnp | grep -E '8080|2525|8081'`: all three must show `127.0.0.1`.
 
-## 6. Certificates and the HTTPS front door (nginx + certbot)
+### What do the admin settings do? (`ip_allowlist`)
 
-One certificate for `mail.example.com` serves both the HTTPS unsubscribe pages (nginx) and STARTTLS on port 587 (Relayward).
+`admin.ip_allowlist` is an extra filter on the admin **API**. **Leaving it empty is fine**: it simply means "no IP filter". The admin port is still protected by (1) being bound to `127.0.0.1` only, so nobody outside the server can open it, and (2) the admin token plus a lockout after repeated wrong tokens. Fill it in only if you reach the admin port over a VPN, e.g. `["10.8.0.0/24"]`.
 
-```bash
-sudo apt install -y nginx certbot
-sudo mkdir -p /var/www/certbot /opt/relayward/certs
-```
+## 5. nginx / OpenResty
 
-First, an HTTP-only site so certbot can validate. `/etc/nginx/sites-available/relayward`:
+### 5.1 HTTPS for the unsubscribe pages
 
-```nginx
-server {
-    listen 80;
-    server_name mail.example.com;
-    location /.well-known/acme-challenge/ { root /var/www/certbot; }
-    location / { return 301 https://$host$request_uri; }
-}
-```
-
-```bash
-sudo ln -sf /etc/nginx/sites-available/relayward /etc/nginx/sites-enabled/relayward
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot certonly --webroot -w /var/www/certbot -d mail.example.com
-```
-
-Now add the HTTPS server block (append to the same file) and reload:
+Add a normal site for `mail.example.com` (in 1Panel: *Websites → Create → Reverse proxy*, then enable HTTPS with your certificate):
 
 ```nginx
 server {
     listen 443 ssl;
-    http2 on;
     server_name mail.example.com;
+    ssl_certificate     /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
 
-    ssl_certificate     /etc/letsencrypt/live/mail.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/mail.example.com/privkey.pem;
-
-    # Only the public listener is proxied. The admin port is NOT exposed here.
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
@@ -169,251 +156,111 @@ server {
 }
 ```
 
-```bash
-sudo nginx -t && sudo systemctl reload nginx
-```
+Only proxy `8080`. Do not proxy `8081`.
 
-Relayward reads the certificate **at start-up only**, so install a renewal hook that copies the renewed files and restarts the container. `/etc/letsencrypt/renewal-hooks/deploy/relayward.sh`:
+### 5.2 SMTP over TLS (port 465)
 
-```bash
-#!/bin/sh
-set -e
-src=/etc/letsencrypt/live/mail.example.com
-dst=/opt/relayward/certs
-cp "$src/fullchain.pem" "$dst/fullchain.pem"
-cp "$src/privkey.pem"   "$dst/privkey.pem"
-chown 65532:65532 "$dst/fullchain.pem" "$dst/privkey.pem"
-chmod 600 "$dst/privkey.pem"
-cd /opt/relayward && docker compose restart relayward
-```
-
-```bash
-sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/relayward.sh
-sudo /etc/letsencrypt/renewal-hooks/deploy/relayward.sh 2>/dev/null || true   # first copy; the restart fails harmlessly until compose.yaml exists
-sudo certbot renew --dry-run
-```
-
-## 7. Run it (Docker Compose)
-
-`/opt/relayward/compose.yaml`:
-
-```yaml
-services:
-  relayward:
-    image: relayward:latest
-    restart: unless-stopped
-    env_file: .env
-    ports:
-      - "587:587"                 # SMTP ingress (TLS configured above)
-      - "127.0.0.1:8080:8080"     # public pages -> nginx only
-      - "127.0.0.1:8081:8081"     # admin -> SSH tunnel / VPN only
-    volumes:
-      - ./config.yaml:/etc/relayward/config.yaml:ro
-      - ./certs:/certs:ro
-      - relayward-data:/data
-volumes:
-  relayward-data:
-```
-
-```bash
-cd /opt/relayward
-sudo docker compose up -d
-sudo docker compose ps               # STATUS should become "healthy"
-sudo docker compose logs relayward   # look for: starting relayward ... / generated initial admin token
-ss -tlnp | grep -E ':(587|8080|8081)\b'   # 8080 and 8081 must show 127.0.0.1
-```
-
-> Containers get `net.ipv4.ip_unprivileged_port_start=0` from Docker, so the non-root process can bind 587 inside the container. On Podman, add `--sysctl net.ipv4.ip_unprivileged_port_start=0` or publish a high port.
-
-### Get the initial admin token
-
-It is printed once at first start, and also stored in the data volume:
-
-```bash
-sudo docker compose logs relayward | grep "generated initial admin token"
-```
-
-Store the `rw_admin_...` value in your password manager. Then create day-to-day tokens and revoke the initial one:
-
-```bash
-TOKEN=rw_admin_xxxxxxxx
-# from your laptop, with the tunnel from the next section running:
-curl -s -X POST http://127.0.0.1:8081/api/tokens \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"ops-alice","role":"operator"}'
-```
-
-(See the README for the full token API.)
-
-### Reach the admin UI
-
-```bash
-ssh -N -L 8081:127.0.0.1:8081 user@mail.example.com
-# then open http://127.0.0.1:8081/admin in your browser and paste the token
-```
-
-Prefer a VPN (WireGuard/Tailscale)? Bind `8081` to the VPN interface address instead of `127.0.0.1` and set `admin.ip_allowlist` to your VPN CIDR.
-
-### Create an app
-
-In the admin UI (or via `POST /api/apps`), create an app. The one-time SMTP password is shown **once**. CLI alternative:
-
-```bash
-sudo docker compose exec relayward /relayward admin create-app \
-  -config /etc/relayward/config.yaml gitea -from noreply@example.com
-```
-
-## Terminating SMTP TLS on nginx / OpenResty (optional)
-
-If your certificate lives on nginx (or OpenResty / 1Panel) you can let it terminate TLS for SMTP using the `stream` module. Clients then connect with **implicit TLS on port 465** ("SSL/TLS" mode, not STARTTLS; nginx cannot proxy STARTTLS).
-
-Leave `smtp.tls_cert` / `smtp.tls_key` empty, keep Relayward off the public network (same Docker network as nginx, or `127.0.0.1` only), and turn on PROXY protocol so Relayward still sees the real client IP (needed for `allowed_from`, rate limits and the failed-login lockout):
+Add a `stream` block at the top level of `nginx.conf`, next to `http {}` (not inside it). It needs the `stream` and `stream_ssl` modules (`nginx -V` / `openresty -V` should show `--with-stream` and `--with-stream_ssl_module`).
 
 ```nginx
-# top level of nginx.conf, next to http {}
 stream {
     server {
         listen 465 ssl;
-        ssl_certificate     /path/to/fullchain.pem;
+        ssl_certificate     /path/to/fullchain.pem;     # same certificate as 5.1
         ssl_certificate_key /path/to/privkey.pem;
         ssl_protocols       TLSv1.2 TLSv1.3;
-        proxy_pass          relayward:587;   # container name on a shared Docker network
-        proxy_protocol      on;              # send the real client IP
+
+        proxy_pass          127.0.0.1:2525;
+        proxy_protocol      on;    # tell Relayward the real client IP
         proxy_timeout       5m;
     }
 }
 ```
 
+`proxy_protocol on` and `smtp.proxy_protocol_trusted` in `config.yaml` must be set **together**. Without the first, Relayward only sees nginx's address (so `allowed_from`, rate limits and the failed-login lockout stop working per client); with the first but not the second, every connection fails. Relayward only trusts the header from the networks you list and never from anyone else, so outsiders cannot fake their IP.
+
+### 5.3 Using 1Panel with OpenResty in a container
+
+`127.0.0.1` inside the OpenResty container is not the host. Join the same Docker network instead: in `docker-compose.yml`, remove the `ports` block and add
+
 ```yaml
-smtp:
-  listen: ":587"
-  proxy_protocol_trusted: ["172.18.0.0/16"]   # the nginx container's network / IP
+    networks: [1panel-network]
+networks:
+  1panel-network:
+    external: true
 ```
 
-Only peers listed in `proxy_protocol_trusted` are expected to send the header (and are dropped if they do not); everyone else is treated normally, so an outside client cannot forge its address. Do **not** enable `proxy_protocol on` without setting `proxy_protocol_trusted`: Relayward would read the header as SMTP and every connection would fail. Find the nginx container's address with `docker network inspect <network>`.
+then use `proxy_pass http://relayward:8080;` (5.1) and `proxy_pass relayward:587;` (5.2). Publish port 465 on the OpenResty container, and open 465 and 443 in the firewall / cloud security group. Find the network's subnet with `docker network inspect 1panel-network` and put it in `proxy_protocol_trusted` if it is not inside `172.16.0.0/12`.
 
-Check it: `openssl s_client -connect mail.example.com:465 -crlf` should show your certificate and a `220` greeting.
-
-## Option B: systemd without Docker
+## 6. Create the first app
 
 ```bash
-# Build anywhere with Go, then copy the binary
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o relayward ./cmd/relayward
-sudo install -m 0755 relayward /usr/local/bin/relayward
-
-sudo useradd --system --home /var/lib/relayward --shell /usr/sbin/nologin relayward
-sudo install -d -o relayward -g relayward -m 0700 /var/lib/relayward
-sudo install -d -m 0755 /etc/relayward
-# config.yaml: same as above but data_dir: /var/lib/relayward and cert paths of your choice
-# /etc/relayward/relayward.env (0600, root:root): UPSTREAM_KEY=...
+docker compose logs relayward | grep "generated initial admin token"   # rw_admin_...
+ssh -N -L 8081:127.0.0.1:8081 user@mail.example.com                     # on your own PC
+# open http://127.0.0.1:8081/admin, paste the token, create an app
 ```
 
-`/etc/systemd/system/relayward.service`:
-
-```ini
-[Unit]
-Description=Relayward mail gateway
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=relayward
-Group=relayward
-EnvironmentFile=/etc/relayward/relayward.env
-ExecStart=/usr/local/bin/relayward serve -config /etc/relayward/config.yaml
-Restart=on-failure
-RestartSec=3
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/relayward
-PrivateTmp=true
-ProtectHome=true
-
-[Install]
-WantedBy=multi-user.target
-```
+The app's SMTP password is shown **once**. Or from the CLI:
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now relayward
-journalctl -u relayward -n 50 --no-pager
+docker compose exec relayward /relayward admin create-app \
+  -config /etc/relayward/config.yaml gitea -from noreply@example.com
 ```
 
-The user running the service must be able to read the certificate files; a certbot deploy hook that copies them to `/etc/relayward/certs` (owner `relayward`, key `0600`) and runs `systemctl restart relayward` does the job.
+Point the app at `mail.example.com`, port **465**, encryption **SSL/TLS**, username = app name, password = the one-time password.
 
-## 8. Verify
+## 7. Verify
 
 ```bash
-# 1. Public listener through HTTPS
-curl -i https://mail.example.com/healthz              # 200 {"status":"ok"}
-
-# 2. SMTP TLS on 587
-openssl s_client -starttls smtp -connect mail.example.com:587 -crlf </dev/null | head -20
-
-# 3. End-to-end send (swaks), using the app's one-time password
-swaks --server mail.example.com --port 587 --tls \
-      --auth LOGIN --auth-user gitea --auth-password 'THE-ONE-TIME-PASSWORD' \
+curl -i https://mail.example.com/healthz                                    # 200 {"status":"ok"}
+openssl s_client -connect mail.example.com:465 -crlf </dev/null | head -20   # your certificate + "220"
+swaks --server mail.example.com --port 465 --tls-on-connect \
+      --auth LOGIN --auth-user gitea --auth-password 'one-time-password' \
       --from noreply@example.com --to you@yourdomain.com
-
-# 4. The log shows it (through the tunnel)
-curl -s "http://127.0.0.1:8081/api/messages?app=gitea&limit=5" -H "Authorization: Bearer $TOKEN"
 ```
 
-Open the received mail: it should carry an unsubscribe footer, and a `List-Unsubscribe` header pointing at `https://mail.example.com/u/...`. Opening that link must show the confirmation page.
+The received mail should have an unsubscribe footer and a `List-Unsubscribe` header pointing to `https://mail.example.com/u/...`.
 
-Then point your real applications at `mail.example.com:587` (STARTTLS, username = app name, password = the one-time password). When every app is switched, **rotate the provider key** and update only `UPSTREAM_KEY` in `/opt/relayward/.env`, then `docker compose up -d`.
-
-## 9. Operating it
+## 8. Day to day
 
 | Task | How |
 | ---- | --- |
-| Logs | `docker compose logs -f relayward` (JSON lines on stdout) |
-| Monitoring | Point Uptime Kuma or similar at `https://mail.example.com/healthz` (503 = `degraded`: database or upstream problem) |
-| Upgrade | `cd /opt/relayward/src && git pull && docker build -t relayward:latest . && cd .. && docker compose up -d`. Migrations run automatically at start-up |
-| Rotate upstream key | Edit `.env`, `docker compose up -d` |
-| Rotate an app's password | `POST /api/apps/{name}/rotate` or the UI button; the old one dies immediately |
+| Logs | `docker compose logs -f relayward` |
+| Monitor | `https://mail.example.com/healthz` (503 = database or upstream problem) |
+| Upgrade | `git pull && docker compose up -d --build` (migrations run on start) |
+| Change provider key | edit `.env`, `docker compose up -d` |
 | Lost all admin tokens | `docker compose exec relayward /relayward admin reset -config /etc/relayward/config.yaml` |
-| Log retention | `log_retention_days` (default 90); pruned at start-up and every 24 h |
+| Certificate renewed | nothing to do for Relayward (nginx holds it); reload nginx as usual |
 
-### Backups
-
-Back up the **whole data volume**. It holds the SQLite database (apps, hashed passwords, log, suppressions, tokens) and `unsubscribe_secret`. **Losing `unsubscribe_secret` invalidates every unsubscribe link already sent.**
+**Backup** = the `data/` folder (SQLite database + `unsubscribe_secret`). Losing `unsubscribe_secret` breaks every unsubscribe link already sent. For a consistent copy:
 
 ```bash
-# consistent copy: stop briefly, archive, start
-cd /opt/relayward
-sudo docker compose stop relayward
-sudo docker run --rm -v relayward_relayward-data:/data -v "$PWD":/backup busybox \
-     tar czf /backup/relayward-data-$(date +%F).tgz -C /data .
-sudo docker compose start relayward
+docker compose stop relayward && tar czf relayward-data-$(date +%F).tgz data && docker compose start relayward
 ```
 
-(The volume name is `<compose-project>_relayward-data`; check with `docker volume ls`.) Keep copies off the server and restrict them: the archive contains secrets.
+Keep backups off the server; they contain secrets.
 
-## 10. Hardening checklist
-
-- [ ] `8080` and `8081` listen on `127.0.0.1` only (`ss -tlnp`).
-- [ ] Port 587 restricted to known app IPs, or TLS enabled and verified with `openssl s_client`.
-- [ ] `public.base_url` is the real HTTPS name and `https://.../healthz` works.
-- [ ] `.env` is `0600`; the provider key lives nowhere else (apps no longer hold it).
-- [ ] Initial admin token stored in a password manager; day-to-day work uses operator/viewer tokens.
-- [ ] Each app has a tight `allowed_from` list and a realistic `rate_per_hour`.
-- [ ] Certificate renewal tested (`certbot renew --dry-run`) and the deploy hook restarts Relayward.
-- [ ] Off-server backup of the data volume, including `unsubscribe_secret`.
-- [ ] SPF, DKIM and DMARC are published for your sending domain at the provider.
-- [ ] OS updates enabled (`unattended-upgrades`), SSH key-only login.
-
-## 11. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause |
 | ------- | ------------ |
-| App gets `535 authentication failed` | Wrong app name/password, app disabled, or app was rotated. After 10 failures in 10 min the source IP is banned for 1 h |
-| `530`/AUTH not offered | TLS is configured, so the client must use STARTTLS before AUTH |
-| `550 5.7.1 sender address not allowed` | The `From` address is not on the app's `allowed_from` list |
-| `451` | Rate limit hit (`rate_limited` in the log), upstream temporarily down, or a transient gateway error: retry later |
-| `554` | The provider rejected the message permanently; see the log entry for the upstream reply |
-| `/healthz` returns 503 | Database error or upstream unreachable; check `docker compose logs` and your provider credentials / outbound port 587 |
-| Unsubscribe link returns 404 | Token invalid or `unsubscribe.secret` changed since the mail was sent |
-| Container exits at start | Config error: the message names the key (e.g. `public.base_url must use https`, `upstream.password is required`) |
-| `permission denied` on `/data` | Bind-mounting a host directory? `chown 65532:65532` it. A named volume needs nothing |
-| Admin UI unreachable | The tunnel is down, or you used the public name; `8081` is intentionally not public |
+| Container exits on start | Config error; the log names the key (e.g. `public.base_url must use https`, `upstream.password is required`) |
+| `permission denied` on `/data` | `sudo chown -R 65532:65532 data` |
+| SMTP connects but closes at once (`421`) | `proxy_protocol on` in nginx, but `proxy_protocol_trusted` missing/not covering nginx's address |
+| SMTP: garbage / TLS error from the app | App uses STARTTLS on 465 (use SSL/TLS), or `proxy_protocol_trusted` set without `proxy_protocol on` |
+| `535 authentication failed` | Wrong app name/password. 10 failures in 10 minutes block that IP for an hour |
+| `550 5.7.1 sender address not allowed` | `From` is not in the app's `allowed_from` |
+| `451` | Rate limit or provider temporarily unavailable; retry later |
+| Unsubscribe link 404 | Invalid token, or `unsubscribe.secret` changed after sending |
+| `/healthz` is 503 | Database error or provider unreachable: check provider credentials and outbound port 587 |
+| Admin page won't open | SSH tunnel is down; `8081` is intentionally not public |
+
+## Hardening checklist
+
+- [ ] `8080`, `2525` and `8081` listen on `127.0.0.1` only (`ss -tlnp`).
+- [ ] Firewall allows only 22, 80/443 and 465 (restrict 465 to your app servers if their IPs are fixed).
+- [ ] `.env` is `chmod 600`, the provider key exists nowhere else.
+- [ ] Initial admin token saved in a password manager, then use operator/viewer tokens for daily work.
+- [ ] Every app has a strict `allowed_from` and a sensible `rate_per_hour`.
+- [ ] `data/` is backed up off-server.
+- [ ] SPF, DKIM, DMARC published for the sending domain.

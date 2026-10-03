@@ -14,9 +14,10 @@ Single static Go binary · one SQLite file · zero runtime dependencies
 
 ---
 
-[![Relayward 30-second promo](docs/media/relayward-promo-en.gif)](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4)
-
-<sub>Click the animation for the full 30 s video (with music) · [中文版视频](https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4)</sub>
+<div align="center">
+<video src="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4" controls muted width="720"></video>
+<br><sub>30 s promo · if the player does not load, <a href="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-en.mp4">open the video</a> · <a href="https://github.com/biliblihuorong/relayward-mail/raw/master/docs/media/relayward-promo-zh.mp4">中文版</a></sub>
+</div>
 
 ## Why Relayward
 
@@ -94,7 +95,7 @@ When every app is switched, rotate the key at your provider and update `UPSTREAM
 
 You can also open `http://127.0.0.1:8081/admin`, paste the token, and do everything from the browser.
 
-> Going to production? Read the **[Deployment guide](docs/DEPLOYMENT.md)** — Docker, HTTPS reverse proxy, TLS on port 587, DNS, firewall, backups.
+> Going to production? Read the **[Deployment guide](docs/DEPLOYMENT.md)** — Docker Compose, nginx/OpenResty HTTPS and SMTP TLS, admin access, backups.
 
 ## Ports
 
