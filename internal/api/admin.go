@@ -41,8 +41,13 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if ct := mime.TypeByExtension(path.Ext(file)); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
+	// Assets are compiled into the binary: after an upgrade the browser must
+	// not keep serving a stale app.js, so nothing is cacheable without
+	// revalidation. The HTML itself is never stored at all.
 	if strings.HasSuffix(file, ".html") {
 		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 	_, _ = io.Copy(w, bytes.NewReader(data))
 }

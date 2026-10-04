@@ -6,86 +6,133 @@
 <title>Relayward 管理台</title>
 <link rel="stylesheet" href="/admin/style.css">
 </head>
-<body>
+<body class="locked">
 <header>
-  <h1>Relayward 管理台</h1>
+  <h1>Relayward</h1>
   <div class="token-box">
-    <input id="token" type="password" placeholder="粘贴管理 token（rw_admin_… / rw_…）" autocomplete="off">
-    <button id="save-token">保存并连接</button>
+    <input id="token" type="password" data-i18n-placeholder="login.token.ph" autocomplete="current-password">
+    <button id="login" data-i18n="login.login"></button>
+    <button id="logout" class="hidden" data-i18n="login.logout"></button>
+    <button id="lang" title="Language"></button>
     <span id="who" class="muted"></span>
   </div>
 </header>
 
+<p id="login-hint" class="guide hidden"></p>
+<div id="captcha-row" class="captcha-row hidden">
+  <div id="turnstile-widget"></div>
+</div>
+
 <nav>
-  <button data-view="stats" class="active">统计</button>
-  <button data-view="messages">发送日志</button>
-  <button data-view="apps">程序</button>
-  <button data-view="unsubs">退订</button>
-  <button data-view="audit">审计</button>
-  <button id="health" class="right">健康检查</button>
+  <button data-view="stats" data-i18n="nav.stats" class="active"></button>
+  <button data-view="messages" data-i18n="nav.messages"></button>
+  <button data-view="apps" data-i18n="nav.apps"></button>
+  <button data-view="unsubs" data-i18n="nav.unsubs"></button>
+  <button data-view="tokens" id="nav-tokens" data-i18n="nav.tokens"></button>
+  <button data-view="audit" id="nav-audit" data-i18n="nav.audit"></button>
+  <button id="help" data-i18n="nav.help"></button>
+  <button id="health" class="right" data-i18n="nav.health"></button>
 </nav>
+
+<div id="guide" class="guide hidden"></div>
 
 <main>
   <section id="view-stats" class="view">
-    <h2>各程序发送量</h2>
+    <h2 data-i18n="stats.title"></h2>
     <table id="stats-table"><thead><tr>
-      <th>程序</th><th>总数</th><th>成功</th><th>失败</th><th>限流</th><th>拦截</th>
+      <th data-i18n="stats.col.app"></th><th data-i18n="stats.col.total"></th><th data-i18n="stats.col.sent"></th>
+      <th data-i18n="stats.col.failed"></th><th data-i18n="stats.col.limited"></th><th data-i18n="stats.col.blocked"></th>
     </tr></thead><tbody></tbody></table>
   </section>
 
   <section id="view-messages" class="view hidden">
-    <h2>发送日志</h2>
+    <h2 data-i18n="messages.title"></h2>
     <form id="msg-filter">
-      <input name="app" placeholder="程序名">
-      <input name="to" placeholder="收件人">
+      <input name="app" data-i18n-placeholder="messages.ph.app">
+      <input name="to" data-i18n-placeholder="messages.ph.to">
       <select name="status">
-        <option value="">全部状态</option>
-        <option value="sent">sent</option>
-        <option value="failed">failed</option>
-        <option value="rate_limited">rate_limited</option>
-        <option value="suppressed">suppressed</option>
+        <option value="" data-i18n="messages.status.all"></option>
+        <option value="sent" data-i18n="status.sent"></option>
+        <option value="failed" data-i18n="status.failed"></option>
+        <option value="rate_limited" data-i18n="status.limited"></option>
+        <option value="suppressed" data-i18n="status.blocked"></option>
       </select>
-      <button>查询</button>
-      <button type="button" id="msg-next" class="muted">下一页</button>
+      <label class="field"><span data-i18n="messages.since"></span><input name="since" type="datetime-local"></label>
+      <label class="field"><span data-i18n="messages.until"></span><input name="until" type="datetime-local"></label>
+      <button data-i18n="messages.search"></button>
+      <button type="button" id="msg-next" class="muted" data-i18n="common.next"></button>
     </form>
     <table id="messages-table"><thead><tr>
-      <th>时间</th><th>程序</th><th>收件人</th><th>主题</th><th>状态</th><th>大小</th><th>Message-ID</th>
+      <th data-i18n="col.time"></th><th data-i18n="col.app"></th><th data-i18n="col.from"></th><th data-i18n="col.to"></th>
+      <th data-i18n="col.subject"></th><th data-i18n="col.status"></th><th data-i18n="col.size"></th><th data-i18n="col.msgid"></th>
     </tr></thead><tbody></tbody></table>
   </section>
 
   <section id="view-apps" class="view hidden">
-    <h2>程序</h2>
+    <h2 data-i18n="apps.title"></h2>
     <form id="app-create">
-      <input name="name" placeholder="名称（SMTP 用户名）" required>
-      <input name="display_name" placeholder="显示名（退订页）">
-      <input name="allowed_from" placeholder="允许发件地址，逗号分隔" required>
-      <label><input type="checkbox" name="unsubscribe" checked> 退订</label>
-      <label><input type="checkbox" name="body_injection" checked> 正文注入</label>
-      <button>创建程序</button>
+      <input name="name" required maxlength="64" data-i18n-placeholder="apps.ph.name">
+      <input name="display_name" data-i18n-placeholder="apps.ph.display">
+      <input name="allowed_from" required data-i18n-placeholder="apps.ph.allowed" size="28">
+      <label><input type="checkbox" name="unsubscribe" checked> <span data-i18n="apps.label.unsub"></span></label>
+      <label><input type="checkbox" name="body_injection" checked> <span data-i18n="apps.label.injection"></span></label>
+      <button data-i18n="apps.create"></button>
+    </form>
+    <form id="app-edit" class="hidden">
+      <b id="app-edit-name"></b>
+      <input name="display_name" data-i18n-placeholder="apps.ph.display">
+      <input name="allowed_from" data-i18n-placeholder="apps.ph.allowed" size="28">
+      <input name="rate_per_hour" type="number" min="1" data-i18n-placeholder="apps.ph.rate">
+      <button data-i18n="apps.save"></button>
+      <button type="button" id="app-edit-cancel" data-i18n="common.cancel"></button>
     </form>
     <div id="one-time" class="hidden"></div>
     <table id="apps-table"><thead><tr>
-      <th>名称</th><th>显示名</th><th>状态</th><th>退订</th><th>正文注入</th><th>限流/h</th><th>操作</th>
+      <th data-i18n="col.app"></th><th data-i18n="col.display"></th><th data-i18n="col.allowed"></th>
+      <th data-i18n="col.status"></th><th data-i18n="apps.col.unsub"></th><th data-i18n="apps.col.injection"></th>
+      <th data-i18n="apps.col.rate"></th><th data-i18n="col.ops"></th>
     </tr></thead><tbody></tbody></table>
   </section>
 
   <section id="view-unsubs" class="view hidden">
-    <h2>退订</h2>
+    <h2 data-i18n="unsubs.title"></h2>
     <form id="unsub-create">
-      <input name="app" placeholder="程序名" required>
-      <input name="email" placeholder="邮箱" required>
-      <button>手动添加退订</button>
+      <input name="app" required data-i18n-placeholder="unsubs.ph.app">
+      <input name="email" required data-i18n-placeholder="unsubs.ph.email">
+      <button data-i18n="unsubs.create"></button>
+      <button type="button" id="unsubs-next" class="muted" data-i18n="common.next"></button>
     </form>
     <table id="unsubs-table"><thead><tr>
-      <th>程序</th><th>邮箱</th><th>来源</th><th>时间</th><th>操作</th>
+      <th data-i18n="col.app"></th><th data-i18n="col.email"></th><th data-i18n="col.source"></th>
+      <th data-i18n="col.time"></th><th data-i18n="col.ops"></th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="view-tokens" class="view hidden">
+    <h2 data-i18n="tokens.title"></h2>
+    <form id="token-create">
+      <input name="name" required maxlength="64" data-i18n-placeholder="tokens.ph.name">
+      <select name="role">
+        <option value="admin" data-i18n="tokens.role.admin"></option>
+        <option value="operator" data-i18n="tokens.role.operator"></option>
+        <option value="viewer" data-i18n="tokens.role.viewer"></option>
+      </select>
+      <label class="field"><span data-i18n="tokens.expires"></span><input name="expires" type="datetime-local"></label>
+      <button data-i18n="tokens.create"></button>
+    </form>
+    <div id="token-one-time" class="hidden"></div>
+    <table id="tokens-table"><thead><tr>
+      <th>ID</th><th data-i18n="col.display"></th><th data-i18n="tokens.col.role"></th><th data-i18n="tokens.col.expires"></th>
+      <th data-i18n="tokens.col.lastused"></th><th data-i18n="tokens.col.created"></th><th data-i18n="col.ops"></th>
     </tr></thead><tbody></tbody></table>
   </section>
 
   <section id="view-audit" class="view hidden">
-    <h2>审计日志</h2>
-    <button id="audit-next" class="muted">下一页</button>
+    <h2 data-i18n="audit.title"></h2>
+    <button id="audit-next" class="muted" data-i18n="common.next"></button>
     <table id="audit-table"><thead><tr>
-      <th>时间</th><th>token</th><th>IP</th><th>动作</th><th>对象</th><th>详情</th>
+      <th data-i18n="col.time"></th><th data-i18n="audit.col.token"></th><th>IP</th><th data-i18n="audit.col.action"></th>
+      <th data-i18n="audit.col.target"></th><th data-i18n="audit.col.detail"></th>
     </tr></thead><tbody></tbody></table>
   </section>
 </main>

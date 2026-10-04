@@ -22,7 +22,23 @@ th { background: #fafbfc; color: #555; font-weight: 600; }
 td button { padding: 3px 8px; font-size: 13px; }
 .muted { color: #888; font-size: 13px; }
 .hidden { display: none; }
-#one-time { background: #fff8e1; border: 1px solid #f0d896; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 14px; word-break: break-all; }
+/* login state: the login form (header) and the captcha row stay visible,
+   everything behind it is hidden until /api/login succeeds */
+body.locked nav, body.locked main { display: none; }
+.captcha-row { display: flex; justify-content: center; padding: 10px 24px; background: #fff; border-bottom: 1px solid #e3e5e8; }
+.captcha-row.hidden { display: none; }
+/* onboarding guide + login hint */
+#login-hint { display: none; margin: 0; padding: 12px 24px; background: #eef4fb; border-bottom: 1px solid #d3e2f2; color: #2b4a66; font-size: 13px; line-height: 1.7; }
+body.locked #login-hint { display: block; }
+#guide { max-width: 1100px; margin: 14px auto 0; padding: 12px 16px; background: #eef4fb; border: 1px solid #d3e2f2; border-left: 4px solid #2b6cb0; border-radius: 8px; color: #2b4a66; font-size: 13px; line-height: 1.8; }
+#guide ol, #guide ul { margin: 6px 0 6px 18px; padding: 0; }
+#guide button { margin-top: 8px; }
+nav button#help { color: #888; }
+nav button#help:hover { color: #2b6cb0; }
+#lang { border-radius: 999px; font-size: 13px; padding: 4px 12px; }
+.field { display: flex; align-items: center; gap: 4px; font-size: 14px; color: #555; }
+.field input { width: 170px; }
+#one-time, #token-one-time { background: #fff8e1; border: 1px solid #f0d896; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 14px; word-break: break-all; }
 #toast { position: fixed; right: 20px; bottom: 20px; background: #1a1a1a; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; }
 #toast.error { background: #b02a2a; }
 code { background: #eef0f2; border-radius: 4px; padding: 1px 5px; font-size: 13px; }
