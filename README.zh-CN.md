@@ -93,7 +93,7 @@ curl -s -X POST http://127.0.0.1:8081/api/apps \
 
 所有程序切换完成后，在提供商后台轮换 key，只更新网关的 `UPSTREAM_KEY`。
 
-也可以直接打开 `http://127.0.0.1:8081/admin`，粘贴 token，全部在浏览器里完成。
+也可以直接打开 `http://127.0.0.1:8081/admin`，用管理 token 登录（可开启 Cloudflare 验证码），全部在浏览器里完成。
 
 > 要上线到公网？请阅读 **[部署指南](docs/DEPLOYMENT.zh-CN.md)**：Docker Compose、nginx/OpenResty 的 HTTPS 与 SMTP TLS、管理端访问、备份。
 
@@ -111,6 +111,9 @@ curl -s -X POST http://127.0.0.1:8081/api/apps \
 
 | 方法 | 路径 | 说明 | 最低角色 |
 | ---- | ---- | ---- | -------- |
+| POST | `/api/login` | 管理页登录：token（可选 Turnstile 验证码）换 HttpOnly 会话 cookie | - |
+| POST | `/api/logout` | 退出登录，销毁会话 | - |
+| GET | `/api/session` | 当前登录状态与验证码站点密钥 | - |
 | GET | `/api/stats` | 各程序发送量、成功/失败/限流/拦截数 | viewer |
 | GET | `/api/messages` | 发送日志，支持 app/to/status/since/until 过滤，游标分页 | viewer |
 | GET | `/api/apps`、`/api/apps/{name}` | 程序列表 / 详情 | viewer |
@@ -125,6 +128,22 @@ curl -s -X POST http://127.0.0.1:8081/api/apps \
 | GET | `/api/audit` | 管理写操作审计日志 | admin |
 
 角色：**admin**（全部）、**operator**（程序与退订）、**viewer**（只读）。
+
+### 管理页登录与会话
+
+`/admin` 页面用 `POST /api/login` 把管理 token 换成一个 HttpOnly 会话 cookie（`SameSite=Strict`，有效期 24 小时），页面不再保存 token 明文；`POST /api/logout` 销毁会话。脚本和 CLI 仍用 `Authorization: Bearer`，两种方式对所有 `/api` 接口等效；token 被吊销时，它签发的所有会话立即失效。
+
+可以为登录开启 Cloudflare Turnstile 人机验证，开启后服务端强制校验（经 siteverify API，Cloudflare 不可达时登录失败关闭），验证失败与 token 失败一样计入 IP 封锁：
+
+```yaml
+admin:
+  listen: ":8081"
+  cookie_secure: true        # 经 HTTPS 反代暴露管理端时开启；SSH 隧道到 localhost 可留空
+  turnstile:
+    enabled: true
+    site_key: "0x4AAA..."           # Cloudflare 控制台获取（公开）
+    secret_key: ${TURNSTILE_SECRET} # 建议从环境变量读取
+```
 
 ## 退订
 
@@ -162,6 +181,7 @@ List-Unsubscribe-Post: List-Unsubscribe=One-Click
 | `upstream.*` | 提供商主机、端口、用户名、密码（`${UPSTREAM_KEY}`）、`tls: starttls\|none` |
 | `public.listen`、`public.base_url` | 面向收件人的监听；`base_url` 必须是 `https://` |
 | `admin.listen`、`admin.ip_allowlist` | 管理监听；用 IP/CIDR 限制 `/api` |
+| `admin.cookie_secure`、`admin.turnstile` | 登录会话 cookie 的 Secure 标志；登录页 Cloudflare Turnstile 验证码 |
 | `unsubscribe.secret`、`unsubscribe.footer_text` | 令牌密钥（留空自动生成）与页脚文案（支持 `{app}` 占位符） |
 | `log_retention_days` | 删除早于该天数的发送日志（默认 90） |
 

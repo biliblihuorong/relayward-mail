@@ -57,10 +57,25 @@ type Public struct {
 
 // Admin configures the HTTP listener that serves the management API.
 // IPAllowlist restricts /api/* to the listed addresses or CIDR ranges; empty
-// means no restriction.
+// means no restriction. CookieSecure sets the Secure flag on the page-login
+// session cookie — enable it when the admin port is exposed through an HTTPS
+// reverse proxy (leave it off for plain-HTTP access such as an SSH tunnel to
+// localhost, where some browsers drop Secure cookies).
 type Admin struct {
-	Listen      string   `yaml:"listen"`
-	IPAllowlist []string `yaml:"ip_allowlist"`
+	Listen       string    `yaml:"listen"`
+	IPAllowlist  []string  `yaml:"ip_allowlist"`
+	CookieSecure bool      `yaml:"cookie_secure"`
+	Turnstile    Turnstile `yaml:"turnstile"`
+}
+
+// Turnstile configures the optional Cloudflare Turnstile captcha on the
+// management page login. Both keys come from the Cloudflare dashboard; the
+// site key is public, the secret key must not be committed (expand it from an
+// environment variable).
+type Turnstile struct {
+	Enabled   bool   `yaml:"enabled"`
+	SiteKey   string `yaml:"site_key"`
+	SecretKey string `yaml:"secret_key"`
 }
 
 // Unsubscribe holds the unsubscribe token secret and the footer wording used
@@ -161,6 +176,11 @@ func (c *Config) Validate() error {
 
 	if (c.SMTP.TLSCert == "") != (c.SMTP.TLSKey == "") {
 		return fmt.Errorf("config: smtp.tls_cert and smtp.tls_key must be set together")
+	}
+	if c.Admin.Turnstile.Enabled {
+		if c.Admin.Turnstile.SiteKey == "" || c.Admin.Turnstile.SecretKey == "" {
+			return fmt.Errorf("config: admin.turnstile enabled requires both site_key and secret_key")
+		}
 	}
 	if _, err := proxyproto.ParseTrusted(c.SMTP.ProxyProtocolTrusted); err != nil {
 		return fmt.Errorf("config: smtp.proxy_protocol_trusted: %w", err)

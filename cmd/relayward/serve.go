@@ -121,6 +121,10 @@ func serve(args []string) error {
 		StartedAt:   startedAt,
 		Logger:      logger,
 		IPAllowlist: cfg.Admin.IPAllowlist,
+
+		TurnstileSiteKey:   cfg.Admin.Turnstile.SiteKey,
+		TurnstileSecretKey: cfg.Admin.Turnstile.SecretKey,
+		CookieSecure:       cfg.Admin.CookieSecure,
 	})
 	apiServer := &http.Server{
 		Addr:              cfg.Admin.Listen,

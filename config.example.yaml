@@ -24,6 +24,11 @@ public:                        # 退订页面（M3）与 /healthz
 admin:                         # 管理 API（M2）与 /healthz
   listen: ":8081"
   ip_allowlist: []             # 空 = 不限制（M2 起生效）
+  cookie_secure: false         # 经 HTTPS 反代暴露 :8081 时改为 true（SSH 隧道到 localhost 保持 false）
+  turnstile:                   # 可选：管理页登录的 Cloudflare Turnstile 人机验证
+    enabled: false
+    site_key: ""               # Cloudflare 控制台获取（公开）
+    secret_key: ${TURNSTILE_SECRET}  # 服务端校验用，建议从环境变量读
 
 unsubscribe:
   secret: ${UNSUB_SECRET}      # 留空则首次启动自动生成并存入 data_dir

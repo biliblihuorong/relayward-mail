@@ -65,9 +65,59 @@ func tokenFromContext(ctx context.Context) *store.AdminToken {
 	return tok
 }
 
+// requestToken resolves the request credential to a valid admin token:
+// `Authorization: Bearer` (scripts and CLIs, unchanged) or the management
+// page's session cookie. It returns nil when neither is present or valid —
+// callers decide whether that failure feeds the lockout. It also throttles
+// last_seen / last_seen-style writes to one per interval.
+func (s *Server) requestToken(r *http.Request) *store.AdminToken {
+	if raw, ok := bearerFromRequest(r); ok {
+		return s.tokenByRaw(r.Context(), raw)
+	}
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		return s.tokenBySession(r.Context(), c.Value)
+	}
+	return nil
+}
+
+// tokenByRaw looks up a bearer token, enforcing its expiry.
+func (s *Server) tokenByRaw(ctx context.Context, raw string) *store.AdminToken {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	tok, err := s.store.GetAdminTokenByHash(ctx, store.HashToken(raw))
+	if err != nil || (tok.ExpiresAt != nil && tok.ExpiresAt.Before(time.Now())) {
+		return nil
+	}
+	s.touchToken(ctx, tok)
+	return tok
+}
+
+// tokenBySession resolves the session cookie back to the admin token it was
+// created from. The store joins admin_tokens, so revoking the token kills
+// its sessions immediately. Session and token activity timestamps are
+// refreshed at most once per sessionTouchInterval.
+func (s *Server) tokenBySession(ctx context.Context, raw string) *store.AdminToken {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	sess, err := s.store.GetAdminSession(ctx, store.HashToken(raw))
+	if err != nil {
+		return nil
+	}
+	if time.Since(sess.LastSeen) >= sessionTouchInterval {
+		if err := s.store.TouchAdminSession(ctx, sess.ID); err != nil {
+			s.logger.Warn("touch session", slog.Int("session_id", int(sess.ID)), slog.String("err", err.Error()))
+		}
+		if err := s.store.TouchAdminToken(ctx, sess.TokenID); err != nil {
+			s.logger.Warn("touch token", slog.Int("token_id", int(sess.TokenID)), slog.String("err", err.Error()))
+		}
+	}
+	return &store.AdminToken{ID: sess.TokenID, Name: sess.TokenName, Role: sess.Role}
+}
+
 // requireRole wraps a management handler with the allowlist, the failure
-// lockout, bearer authentication and the minimum-role check. Every
-// authentication failure is a uniform 401, per the plan.
+// lockout, credential authentication (bearer or session) and the minimum-role
+// check. Every authentication failure is a uniform 401, per the plan.
 func (s *Server) requireRole(minRole string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := remoteIP(r)
@@ -85,17 +135,8 @@ func (s *Server) requireRole(minRole string, next http.HandlerFunc) http.Handler
 			return
 		}
 
-		raw, ok := bearerFromRequest(r)
-		if !ok {
-			s.failedAuth(ip)
-			writeError(w, http.StatusUnauthorized, codeUnauthorized, "missing or invalid token")
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		tok, err := s.store.GetAdminTokenByHash(ctx, store.HashToken(raw))
-		if err != nil || (tok.ExpiresAt != nil && tok.ExpiresAt.Before(time.Now())) {
+		tok := s.requestToken(r)
+		if tok == nil {
 			s.failedAuth(ip)
 			writeError(w, http.StatusUnauthorized, codeUnauthorized, "missing or invalid token")
 			return
@@ -106,7 +147,6 @@ func (s *Server) requireRole(minRole string, next http.HandlerFunc) http.Handler
 			return
 		}
 
-		s.touchToken(ctx, tok)
 		next(w, r.WithContext(context.WithValue(r.Context(), tokenContextKey, tok)))
 	}
 }

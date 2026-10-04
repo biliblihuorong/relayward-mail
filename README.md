@@ -93,7 +93,7 @@ Then configure the app's SMTP settings:
 
 When every app is switched, rotate the key at your provider and update `UPSTREAM_KEY` on the gateway only.
 
-You can also open `http://127.0.0.1:8081/admin`, paste the token, and do everything from the browser.
+You can also open `http://127.0.0.1:8081/admin`, sign in with an admin token (optionally behind a Cloudflare captcha), and do everything from the browser.
 
 > Going to production? Read the **[Deployment guide](docs/DEPLOYMENT.md)** — Docker Compose, nginx/OpenResty HTTPS and SMTP TLS, admin access, backups.
 
@@ -111,6 +111,9 @@ All endpoints need `Authorization: Bearer <token>`, speak JSON and return errors
 
 | Method | Path | Description | Min. role |
 | ------ | ---- | ----------- | --------- |
+| POST | `/api/login` | Page login: admin token (plus Turnstile verdict when enabled) for an HttpOnly session cookie | - |
+| POST | `/api/logout` | Log out; destroys the session | - |
+| GET | `/api/session` | Current login state and the captcha site key | - |
 | GET | `/api/stats` | Per-app totals: sent / failed / rate-limited / suppressed | viewer |
 | GET | `/api/messages` | Send log; filters `app`, `to`, `status`, `since`, `until`; cursor pagination | viewer |
 | GET | `/api/apps`, `/api/apps/{name}` | List / inspect apps | viewer |
@@ -125,6 +128,22 @@ All endpoints need `Authorization: Bearer <token>`, speak JSON and return errors
 | GET | `/api/audit` | Audit log of every management write | admin |
 
 Roles: **admin** (everything), **operator** (apps and unsubscribes), **viewer** (read-only).
+
+### Page login and sessions
+
+The `/admin` page exchanges the admin token for an HttpOnly session cookie via `POST /api/login` (`SameSite=Strict`, valid for 24 hours) and never stores the raw token itself; `POST /api/logout` destroys the session. Scripts and CLIs keep using `Authorization: Bearer` — both grant identical access to every `/api` route, and revoking a token immediately kills every session it created.
+
+A Cloudflare Turnstile captcha can be required on login; when enabled the server enforces it (via the siteverify API, failing closed if Cloudflare is unreachable) and failed captchas feed the IP lockout just like failed tokens:
+
+```yaml
+admin:
+  listen: ":8081"
+  cookie_secure: true        # enable when the admin port sits behind an HTTPS proxy; leave off for SSH tunnels to localhost
+  turnstile:
+    enabled: true
+    site_key: "0x4AAA..."           # from the Cloudflare dashboard (public)
+    secret_key: ${TURNSTILE_SECRET} # read from the environment
+```
 
 ## Unsubscribe
 
@@ -162,6 +181,7 @@ See [`config.example.yaml`](config.example.yaml) (every `${VAR}` is expanded fro
 | `upstream.*` | Provider host, port, username, password (`${UPSTREAM_KEY}`), `tls: starttls\|none` |
 | `public.listen`, `public.base_url` | Recipient-facing listener; `base_url` must be an `https://` URL |
 | `admin.listen`, `admin.ip_allowlist` | Admin listener; restrict `/api` to IPs/CIDRs |
+| `admin.cookie_secure`, `admin.turnstile` | Secure flag of the login-session cookie; Cloudflare Turnstile captcha on the page login |
 | `unsubscribe.secret`, `unsubscribe.footer_text` | Token secret (blank = auto) and footer wording (`{app}` placeholder) |
 | `log_retention_days` | Delete message-log rows older than this many days (default 90) |
 

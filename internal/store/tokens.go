@@ -104,10 +104,14 @@ func (s *Store) GetAdminTokenByID(ctx context.Context, id int64) (*AdminToken, e
 	return scanToken(row)
 }
 
-// DeleteAdminToken revokes a token by removing its row. The audit entry, when
-// given, commits in the same transaction.
+// DeleteAdminToken revokes a token by removing its row, together with any
+// login sessions created from it. The audit entry, when given, commits in the
+// same transaction.
 func (s *Store) DeleteAdminToken(ctx context.Context, id int64, audit *AuditEntry) error {
 	return s.runWithAudit(ctx, audit, func(tx executor) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM admin_sessions WHERE token_id = ?`, id); err != nil {
+			return fmt.Errorf("delete sessions of token %d: %w", id, err)
+		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM admin_tokens WHERE id = ?`, id)
 		if err != nil {
 			return fmt.Errorf("delete admin token %d: %w", id, err)
@@ -123,11 +127,15 @@ func (s *Store) DeleteAdminToken(ctx context.Context, id int64, audit *AuditEntr
 	})
 }
 
-// ResetAdminTokens revokes every token and returns how many were removed.
-// Used by the local `admin reset` command when all tokens are lost.
+// ResetAdminTokens revokes every token — and with it every login session —
+// and returns how many tokens were removed. Used by the local `admin reset`
+// command when all tokens are lost.
 func (s *Store) ResetAdminTokens(ctx context.Context, audit *AuditEntry) (int64, error) {
 	var count int64
 	err := s.runWithAudit(ctx, audit, func(tx executor) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM admin_sessions`); err != nil {
+			return fmt.Errorf("reset admin sessions: %w", err)
+		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM admin_tokens`)
 		if err != nil {
 			return fmt.Errorf("reset admin tokens: %w", err)

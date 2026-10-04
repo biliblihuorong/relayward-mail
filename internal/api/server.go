@@ -22,6 +22,9 @@ const requestTimeout = 10 * time.Second
 
 // Options configures the management API server. Limiter and Lockout may be
 // nil (tests without throttles); IPAllowlist empty disables the filter.
+// Turnstile keys non-empty enable the captcha on the page login; CookieSecure
+// sets the Secure flag on the session cookie (set it when the admin port is
+// exposed through an HTTPS reverse proxy).
 type Options struct {
 	Store       *store.Store
 	Monitor     *UpstreamMonitor
@@ -32,6 +35,10 @@ type Options struct {
 	StartedAt   time.Time
 	Logger      *slog.Logger
 	IPAllowlist []string
+
+	TurnstileSiteKey   string
+	TurnstileSecretKey string
+	CookieSecure       bool
 }
 
 // Server is the management HTTP server.
@@ -45,6 +52,10 @@ type Server struct {
 	logger    *slog.Logger
 	version   string
 	startedAt time.Time
+
+	turnstile        *turnstileVerifier
+	turnstileSiteKey string
+	cookieSecure     bool
 }
 
 // New builds the management API server.
@@ -52,17 +63,34 @@ func New(opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Server{
-		store:     opts.Store,
-		monitor:   opts.Monitor,
-		limiter:   opts.Limiter,
-		lockout:   opts.Lockout,
-		allowlist: parseIPAllowlist(opts.IPAllowlist),
-		dataDir:   opts.DataDir,
-		logger:    opts.Logger,
-		version:   opts.Version,
-		startedAt: opts.StartedAt,
+	s := &Server{
+		store:        opts.Store,
+		monitor:      opts.Monitor,
+		limiter:      opts.Limiter,
+		lockout:      opts.Lockout,
+		allowlist:    parseIPAllowlist(opts.IPAllowlist),
+		dataDir:      opts.DataDir,
+		logger:       opts.Logger,
+		version:      opts.Version,
+		startedAt:    opts.StartedAt,
+		cookieSecure: opts.CookieSecure,
 	}
+	if opts.TurnstileSiteKey != "" && opts.TurnstileSecretKey != "" {
+		s.turnstile = newTurnstileVerifier(opts.TurnstileSecretKey)
+		s.turnstileSiteKey = opts.TurnstileSiteKey
+	}
+	return s
+}
+
+// csp returns the response Content-Security-Policy. When the Turnstile
+// captcha is enabled the Cloudflare challenge script and iframe must load
+// from challenges.cloudflare.com; everything else stays same-origin.
+func (s *Server) csp() string {
+	if s.turnstile != nil {
+		return "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; " +
+			"frame-src https://challenges.cloudflare.com; frame-ancestors 'none'"
+	}
+	return "default-src 'self'; frame-ancestors 'none'"
 }
 
 // Handler returns the http.Handler for the management surface.
@@ -72,6 +100,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin", s.handleAdmin)
 	mux.HandleFunc("GET /admin/app.js", s.handleAdmin)
 	mux.HandleFunc("GET /admin/style.css", s.handleAdmin)
+
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/session", s.handleSessionStatus)
 
 	mux.HandleFunc("GET /api/stats", s.requireRole(store.RoleViewer, s.handleStats))
 	mux.HandleFunc("GET /api/messages", s.requireRole(store.RoleViewer, s.handleMessages))
@@ -89,7 +121,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.requireRole(store.RoleAdmin, s.handleRevokeToken))
 	mux.HandleFunc("GET /api/audit", s.requireRole(store.RoleAdmin, s.handleAudit))
 
-	return securityHeaders(s.recoverMiddleware(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes))))
+	return s.securityHeaders(s.recoverMiddleware(requestTimeoutMiddleware(http.MaxBytesHandler(mux, maxBodyBytes))))
 }
 
 // HealthzHandler returns the standalone /healthz handler so the public
@@ -100,10 +132,10 @@ func (s *Server) HealthzHandler() http.HandlerFunc {
 }
 
 // securityHeaders applies the response headers mandated by the plan to every
-// HTTP surface.
-func securityHeaders(next http.Handler) http.Handler {
+// HTTP surface; the CSP comes from s.csp (it widens when Turnstile is on).
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", s.csp())
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
@@ -206,28 +238,9 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, code, resp)
 }
 
-// lookupToken validates the Bearer token (if any) and returns the token row
-// when it is valid and not expired; otherwise nil. Failures here do not feed
-// the lockout: only /api authentication attempts do.
+// lookupToken resolves the request credential (bearer or session cookie) for
+// /healthz details. Failures here do not feed the lockout: only /api
+// authentication attempts do.
 func (s *Server) lookupToken(r *http.Request) *store.AdminToken {
-	raw, ok := bearerFromRequest(r)
-	if !ok {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-
-	tok, err := s.store.GetAdminTokenByHash(ctx, store.HashToken(raw))
-	if err != nil {
-		return nil
-	}
-	if tok.ExpiresAt != nil && tok.ExpiresAt.Before(time.Now()) {
-		return nil
-	}
-
-	if err := s.store.TouchAdminToken(ctx, tok.ID); err != nil {
-		s.logger.Warn("touch token", slog.Int("token_id", int(tok.ID)), slog.String("err", err.Error()))
-	}
-	return tok
+	return s.requestToken(r)
 }

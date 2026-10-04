@@ -24,6 +24,9 @@ const (
 	codeUnsubNotFound  = "unsubscribe_not_found"
 	codeInvalidRequest = "invalid_request"
 	codeInternal       = "internal_error"
+
+	codeCaptchaFailed      = "captcha_failed"      // Cloudflare rejected the widget token
+	codeCaptchaUnavailable = "captcha_unavailable" // siteverify could not be reached
 )
 
 // errorBody matches the plan's unified error shape.

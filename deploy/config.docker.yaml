@@ -25,6 +25,11 @@ public:
 admin:
   listen: ":8081"
   ip_allowlist: []               # empty = no IP filter; protection is the 127.0.0.1 binding + token
+  cookie_secure: true            # set false only for plain-HTTP access (e.g. SSH tunnel to localhost)
+  turnstile:                     # optional Cloudflare Turnstile captcha on the admin page login
+    enabled: false
+    site_key: ""                 # from the Cloudflare dashboard (public)
+    secret_key: ${TURNSTILE_SECRET}
 
 unsubscribe:
   secret: ${UNSUB_SECRET}
